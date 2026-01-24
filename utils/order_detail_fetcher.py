@@ -328,6 +328,10 @@ class OrderDetailFetcher:
                 # 获取并解析SKU信息
                 sku_info = await self._get_sku_content()
 
+                # 获取订单状态
+                order_status = await self._get_order_status()
+                logger.info(f"订单 {order_id} 状态: {order_status}")
+
                 # 获取页面标题
                 try:
                     title = await self.page.title()
@@ -346,6 +350,7 @@ class OrderDetailFetcher:
                     'spec_value_2': sku_info.get('spec_value_2', '') if sku_info else '',  # 规格2值
                     'quantity': sku_info.get('quantity', '') if sku_info else '',  # 数量
                     'amount': sku_info.get('amount', '') if sku_info else '',      # 金额
+                    'order_status': order_status,  # 订单状态
                     'timestamp': time.time(),
                     'from_cache': False  # 标记数据来源
                 }
@@ -441,6 +446,100 @@ class OrderDetailFetcher:
         except Exception as e:
             logger.error(f"解析SKU内容异常: {e}")
             return {}
+
+    async def _get_order_status(self) -> str:
+        """
+        从订单详情页面获取订单状态
+
+        Returns:
+            订单状态字符串，可能的值:
+            - 'success': 交易成功
+            - 'closed': 交易关闭
+            - 'pending_payment': 待付款
+            - 'pending_delivery': 待发货
+            - 'shipped': 已发货/待收货
+            - 'refunding': 退款中
+            - 'unknown': 未知状态
+        """
+        try:
+            if not await self._check_browser_status():
+                logger.error("浏览器状态异常，无法获取订单状态")
+                return 'unknown'
+
+            # 尝试多种选择器获取订单状态
+            status_selectors = [
+                '.orderStatusText--F6eoVcHD',  # 常见的订单状态选择器
+                '.order-status',
+                '.status-text',
+                '[class*="orderStatus"]',
+                '[class*="StatusText"]',
+            ]
+
+            status_text = ''
+            for selector in status_selectors:
+                try:
+                    element = await self.page.query_selector(selector)
+                    if element:
+                        text = await element.text_content()
+                        if text:
+                            status_text = text.strip()
+                            logger.info(f"通过选择器 {selector} 获取到订单状态: {status_text}")
+                            break
+                except Exception as e:
+                    logger.debug(f"选择器 {selector} 获取失败: {e}")
+                    continue
+
+            # 如果选择器都失败，尝试从页面文本中提取
+            if not status_text:
+                try:
+                    page_content = await self.page.content()
+                    # 检查常见的状态文本
+                    status_patterns = [
+                        ('交易成功', 'success'),
+                        ('交易关闭', 'closed'),
+                        ('已关闭', 'closed'),
+                        ('待付款', 'pending_payment'),
+                        ('待发货', 'pending_delivery'),
+                        ('已发货', 'shipped'),
+                        ('待收货', 'shipped'),
+                        ('退款中', 'refunding'),
+                        ('退款成功', 'refunded'),
+                    ]
+                    for pattern, status in status_patterns:
+                        if pattern in page_content:
+                            logger.info(f"从页面内容中检测到订单状态: {pattern} -> {status}")
+                            return status
+                except Exception as e:
+                    logger.warning(f"从页面内容获取状态失败: {e}")
+
+            # 解析状态文本
+            if status_text:
+                status_mapping = {
+                    '交易成功': 'success',
+                    '交易关闭': 'closed',
+                    '已关闭': 'closed',
+                    '待付款': 'pending_payment',
+                    '待发货': 'pending_delivery',
+                    '已发货': 'shipped',
+                    '待收货': 'shipped',
+                    '退款中': 'refunding',
+                    '退款成功': 'refunded',
+                }
+
+                for text, status in status_mapping.items():
+                    if text in status_text:
+                        logger.info(f"订单状态解析: {status_text} -> {status}")
+                        return status
+
+                logger.warning(f"未知的订单状态文本: {status_text}")
+                return 'unknown'
+
+            logger.warning("无法获取订单状态")
+            return 'unknown'
+
+        except Exception as e:
+            logger.error(f"获取订单状态异常: {e}")
+            return 'unknown'
 
     async def _get_sku_content(self) -> Optional[Dict[str, str]]:
         """获取并解析SKU内容，包括规格、数量和金额，支持双规格"""
@@ -690,7 +789,7 @@ class OrderDetailFetcher:
 
 
 # 便捷函数
-async def fetch_order_detail_simple(order_id: str, cookie_string: str = None, headless: bool = True) -> Optional[Dict[str, Any]]:
+async def fetch_order_detail_simple(order_id: str, cookie_string: str = None, headless: bool = True, force_refresh: bool = False) -> Optional[Dict[str, Any]]:
     """
     简单的订单详情获取函数（优化版：先检查数据库，再初始化浏览器）
 
@@ -698,6 +797,7 @@ async def fetch_order_detail_simple(order_id: str, cookie_string: str = None, he
         order_id: 订单ID
         cookie_string: Cookie字符串，如果不提供则使用默认值
         headless: 是否无头模式
+        force_refresh: 是否强制刷新（跳过缓存直接从闲鱼获取）
 
     Returns:
         订单详情字典，包含以下字段：
@@ -709,60 +809,65 @@ async def fetch_order_detail_simple(order_id: str, cookie_string: str = None, he
         - spec_value: 规格值
         - quantity: 数量
         - amount: 金额
+        - order_status: 订单状态
         - timestamp: 获取时间戳
         失败时返回None
     """
-    # 先检查数据库中是否有有效数据
-    try:
-        from db_manager import db_manager
-        existing_order = db_manager.get_order_by_id(order_id)
+    # 如果不是强制刷新，先检查数据库中是否有有效数据
+    if not force_refresh:
+        try:
+            from db_manager import db_manager
+            existing_order = db_manager.get_order_by_id(order_id)
 
-        if existing_order:
-            # 检查金额字段是否有效
-            amount = existing_order.get('amount', '')
-            amount_valid = False
+            if existing_order:
+                # 检查金额字段是否有效
+                amount = existing_order.get('amount', '')
+                amount_valid = False
 
-            if amount:
-                amount_clean = str(amount).replace('¥', '').replace('￥', '').replace('$', '').strip()
-                try:
-                    amount_value = float(amount_clean)
-                    amount_valid = amount_value > 0
-                except (ValueError, TypeError):
-                    amount_valid = False
+                if amount:
+                    amount_clean = str(amount).replace('¥', '').replace('￥', '').replace('$', '').strip()
+                    try:
+                        amount_value = float(amount_clean)
+                        amount_valid = amount_value > 0
+                    except (ValueError, TypeError):
+                        amount_valid = False
 
-            if amount_valid:
-                logger.info(f"📋 订单 {order_id} 已存在于数据库中且金额有效({amount})，直接返回缓存数据")
-                print(f"✅ 订单 {order_id} 使用缓存数据，跳过浏览器获取")
+                if amount_valid:
+                    logger.info(f"📋 订单 {order_id} 已存在于数据库中且金额有效({amount})，直接返回缓存数据")
+                    print(f"✅ 订单 {order_id} 使用缓存数据，跳过浏览器获取")
 
-                # 构建返回格式
-                result = {
-                    'order_id': existing_order['order_id'],
-                    'url': f"https://www.goofish.com/order-detail?orderId={order_id}&role=seller",
-                    'title': f"订单详情 - {order_id}",
-                    'sku_info': {
+                    # 构建返回格式
+                    result = {
+                        'order_id': existing_order['order_id'],
+                        'url': f"https://www.goofish.com/order-detail?orderId={order_id}&role=seller",
+                        'title': f"订单详情 - {order_id}",
+                        'sku_info': {
+                            'spec_name': existing_order.get('spec_name', ''),
+                            'spec_value': existing_order.get('spec_value', ''),
+                            'spec_name_2': existing_order.get('spec_name_2', ''),
+                            'spec_value_2': existing_order.get('spec_value_2', ''),
+                            'quantity': existing_order.get('quantity', ''),
+                            'amount': existing_order.get('amount', '')
+                        },
                         'spec_name': existing_order.get('spec_name', ''),
                         'spec_value': existing_order.get('spec_value', ''),
                         'spec_name_2': existing_order.get('spec_name_2', ''),
                         'spec_value_2': existing_order.get('spec_value_2', ''),
                         'quantity': existing_order.get('quantity', ''),
-                        'amount': existing_order.get('amount', '')
-                    },
-                    'spec_name': existing_order.get('spec_name', ''),
-                    'spec_value': existing_order.get('spec_value', ''),
-                    'spec_name_2': existing_order.get('spec_name_2', ''),
-                    'spec_value_2': existing_order.get('spec_value_2', ''),
-                    'quantity': existing_order.get('quantity', ''),
-                    'amount': existing_order.get('amount', ''),
-                    'order_status': existing_order.get('order_status', 'unknown'),  # 添加订单状态
-                    'timestamp': time.time(),
-                    'from_cache': True
-                }
-                return result
-            else:
-                logger.info(f"📋 订单 {order_id} 存在于数据库中但金额无效({amount})，需要重新获取")
-                print(f"⚠️ 订单 {order_id} 金额无效，重新获取详情...")
-    except Exception as e:
-        logger.warning(f"检查数据库缓存失败: {e}")
+                        'amount': existing_order.get('amount', ''),
+                        'order_status': existing_order.get('order_status', 'unknown'),  # 添加订单状态
+                        'timestamp': time.time(),
+                        'from_cache': True
+                    }
+                    return result
+                else:
+                    logger.info(f"📋 订单 {order_id} 存在于数据库中但金额无效({amount})，需要重新获取")
+                    print(f"⚠️ 订单 {order_id} 金额无效，重新获取详情...")
+        except Exception as e:
+            logger.warning(f"检查数据库缓存失败: {e}")
+    else:
+        logger.info(f"🔄 订单 {order_id} 强制刷新，跳过缓存检查")
+        print(f"🔄 订单 {order_id} 强制刷新模式...")
 
     # 数据库中没有有效数据，使用浏览器获取
     logger.info(f"🌐 订单 {order_id} 需要浏览器获取，开始初始化浏览器...")

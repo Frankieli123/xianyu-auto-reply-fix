@@ -9884,6 +9884,9 @@ function createOrderRow(order) {
     const statusClass = getOrderStatusClass(order.order_status);
     const statusText = getOrderStatusText(order.order_status);
 
+    // 判断是否可以手动发货（允许多次发货，除了交易关闭的订单）
+    const canDeliver = !['closed', 'refunded'].includes(order.order_status);
+
     return `
         <tr>
             <td>
@@ -9924,6 +9927,12 @@ function createOrderRow(order) {
             </td>
             <td>
                 <div class="btn-group btn-group-sm" role="group">
+                    <button class="btn btn-outline-success btn-sm" onclick="manualDeliverOrder('${order.order_id}')" title="手动发货" ${canDeliver ? '' : 'disabled'}>
+                        <i class="bi bi-truck"></i>
+                    </button>
+                    <button class="btn btn-outline-info btn-sm" onclick="refreshOrderStatus('${order.order_id}')" title="刷新状态">
+                        <i class="bi bi-arrow-repeat"></i>
+                    </button>
                     <button class="btn btn-outline-primary btn-sm" onclick="showOrderDetail('${order.order_id}')" title="查看详情">
                         <i class="bi bi-eye"></i>
                     </button>
@@ -10332,6 +10341,75 @@ async function batchDeleteOrders() {
     } catch (error) {
         console.error('批量删除订单失败:', error);
         showToast('批量删除订单失败', 'danger');
+    }
+}
+
+// 手动发货订单
+async function manualDeliverOrder(orderId) {
+    try {
+        const confirmed = confirm(`确定要手动发货此订单吗？\n\n订单ID: ${orderId}\n\n系统将根据发货规则自动匹配发货内容并发送给买家。`);
+        if (!confirmed) {
+            return;
+        }
+
+        showToast('正在执行发货...', 'info');
+
+        const response = await fetch(`${apiBase}/api/orders/${orderId}/deliver`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${authToken}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        const result = await response.json();
+
+        if (response.ok) {
+            if (result.delivered) {
+                showToast(`发货成功！\n${result.message}`, 'success');
+            } else {
+                showToast(`发货失败: ${result.message}`, 'warning');
+            }
+            // 刷新订单列表
+            await refreshOrdersData();
+        } else {
+            showToast(`发货失败: ${result.detail || '未知错误'}`, 'danger');
+        }
+    } catch (error) {
+        console.error('手动发货失败:', error);
+        showToast('手动发货失败: ' + error.message, 'danger');
+    }
+}
+
+// 刷新订单状态
+async function refreshOrderStatus(orderId) {
+    try {
+        showToast('正在刷新订单状态...', 'info');
+
+        const response = await fetch(`${apiBase}/api/orders/${orderId}/refresh`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${authToken}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        const result = await response.json();
+
+        if (response.ok) {
+            if (result.updated) {
+                showToast(`订单状态已更新: ${result.new_status}`, 'success');
+            } else {
+                showToast(result.message || '订单状态无变化', 'info');
+            }
+            // 刷新订单列表
+            await refreshOrdersData();
+        } else {
+            showToast(`刷新失败: ${result.detail || '未知错误'}`, 'danger');
+        }
+    } catch (error) {
+        console.error('刷新订单状态失败:', error);
+        showToast('刷新订单状态失败: ' + error.message, 'danger');
     }
 }
 

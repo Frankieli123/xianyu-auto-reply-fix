@@ -5127,15 +5127,16 @@ class XianyuLive:
             logger.error(f"【{self.cookie_id}】免拼发货模块调用失败: {self._safe_str(e)}")
             return {"error": f"免拼发货模块调用失败: {self._safe_str(e)}", "order_id": order_id}
 
-    async def fetch_order_detail_info(self, order_id: str, item_id: str = None, buyer_id: str = None, debug_headless: bool = None, sid: str = None):
+    async def fetch_order_detail_info(self, order_id: str, item_id: str = None, buyer_id: str = None, debug_headless: bool = None, sid: str = None, force_refresh: bool = False):
         """获取订单详情信息（使用独立的锁机制，不受延迟锁影响）
-        
+
         Args:
             order_id: 订单ID
             item_id: 商品ID
             buyer_id: 买家ID
             debug_headless: 是否使用有头模式调试
             sid: 会话ID（如 56226853668@goofish），用于简化消息匹配订单
+            force_refresh: 是否强制刷新（跳过缓存直接从闲鱼获取）
         """
         # 使用独立的订单详情锁，不与自动发货锁冲突
         order_detail_lock = self._order_detail_locks[order_id]
@@ -5163,7 +5164,7 @@ class XianyuLive:
                     logger.info(f"【{self.cookie_id}】🖥️ 启用有头模式进行调试")
 
                 # 异步获取订单详情（使用当前账号的cookie）
-                result = await fetch_order_detail_simple(order_id, cookie_string, headless=headless_mode)
+                result = await fetch_order_detail_simple(order_id, cookie_string, headless=headless_mode, force_refresh=force_refresh)
 
                 if result:
                     logger.info(f"【{self.cookie_id}】订单详情获取成功: {order_id}")
@@ -5176,6 +5177,10 @@ class XianyuLive:
                     spec_value_2 = result.get('spec_value_2', '')
                     quantity = result.get('quantity', '')
                     amount = result.get('amount', '')
+                    # 获取订单状态（从闲鱼页面解析）
+                    order_status = result.get('order_status', '')
+                    if order_status:
+                        logger.info(f"【{self.cookie_id}】📊 订单状态: {order_status}")
 
                     if spec_name and spec_value:
                         logger.info(f"【{self.cookie_id}】📋 规格名称: {spec_name}")
@@ -5209,7 +5214,8 @@ class XianyuLive:
                                 spec_value_2=spec_value_2,
                                 quantity=quantity,
                                 amount=amount,
-                                cookie_id=self.cookie_id
+                                cookie_id=self.cookie_id,
+                                order_status=order_status if order_status else None  # 传递从闲鱼获取的订单状态
                             )
                             
                             # 使用订单状态处理器设置状态
@@ -7620,6 +7626,7 @@ class XianyuLive:
             logger.warning(f"【{self.cookie_id}】强制关闭时出现异常（已忽略）: {e}")
 
     async def send_msg_once(self, toid, item_id, text):
+        """单次发送消息（创建新的WebSocket连接）"""
         headers = {
             "Cookie": self.cookies_str,
             "Host": "wss-goofish.dingtalk.com",
@@ -7631,27 +7638,46 @@ class XianyuLive:
             "Accept-Encoding": "gzip, deflate, br, zstd",
             "Accept-Language": "zh-CN,zh;q=0.9",
         }
+
+        logger.info(f"【{self.cookie_id}】开始单次发送消息: toid={toid}, item_id={item_id}")
+
         # 兼容不同版本的websockets库
         try:
             async with websockets.connect(
                 self.base_url,
-                extra_headers=headers
+                extra_headers=headers,
+                close_timeout=5  # 添加关闭超时
             ) as websocket:
-                await self._handle_websocket_connection(websocket, toid, item_id, text)
+                result = await self._handle_websocket_connection(websocket, toid, item_id, text)
+                if result:
+                    logger.info(f"【{self.cookie_id}】单次发送消息成功")
+                else:
+                    raise Exception("消息发送失败")
         except TypeError as e:
             # 安全地检查异常信息
             error_msg = self._safe_str(e)
 
             if "extra_headers" in error_msg:
                 logger.warning("websockets库不支持extra_headers参数，使用兼容模式")
-                # 使用兼容模式，通过subprotocols传递部分头信息
+                # 使用兼容模式
                 async with websockets.connect(
                     self.base_url,
-                    additional_headers=headers
+                    additional_headers=headers,
+                    close_timeout=5
                 ) as websocket:
-                    await self._handle_websocket_connection(websocket, toid, item_id, text)
+                    result = await self._handle_websocket_connection(websocket, toid, item_id, text)
+                    if result:
+                        logger.info(f"【{self.cookie_id}】单次发送消息成功(兼容模式)")
+                    else:
+                        raise Exception("消息发送失败")
             else:
                 raise
+        except websockets.exceptions.ConnectionClosedError as e:
+            logger.warning(f"【{self.cookie_id}】WebSocket连接关闭: {self._safe_str(e)}")
+            # 连接关闭但消息可能已发送，不抛出异常
+        except Exception as e:
+            logger.error(f"【{self.cookie_id}】单次发送消息异常: {self._safe_str(e)}")
+            raise
 
     async def _create_websocket_connection(self, headers):
         """创建WebSocket连接，兼容不同版本的websockets库，支持代理配置"""
@@ -7773,19 +7799,40 @@ class XianyuLive:
 
     async def _handle_websocket_connection(self, websocket, toid, item_id, text):
         """处理WebSocket连接的具体逻辑"""
-        await self.init(websocket)
-        await self.create_chat(websocket, toid, item_id)
-        async for message in websocket:
-            try:
-                logger.info(f"【{self.cookie_id}】message: {message}")
-                message = json.loads(message)
-                cid = message["body"]["singleChatConversation"]["cid"]
-                cid = cid.split('@')[0]
-                await self.send_msg(websocket, cid, toid, text)
-                logger.info(f'【{self.cookie_id}】send message')
-                return
-            except Exception as e:
-                pass
+        try:
+            await self.init(websocket)
+            await self.create_chat(websocket, toid, item_id)
+
+            # 添加超时处理，最多等待30秒
+            timeout = 30
+            start_time = time.time()
+
+            async for message in websocket:
+                try:
+                    # 检查是否超时
+                    if time.time() - start_time > timeout:
+                        logger.warning(f"【{self.cookie_id}】WebSocket消息等待超时")
+                        break
+
+                    logger.info(f"【{self.cookie_id}】message: {message}")
+                    message = json.loads(message)
+                    cid = message["body"]["singleChatConversation"]["cid"]
+                    cid = cid.split('@')[0]
+                    await self.send_msg(websocket, cid, toid, text)
+                    logger.info(f'【{self.cookie_id}】send message success')
+                    return True
+                except KeyError:
+                    # 消息格式不符合预期，继续等待
+                    continue
+                except Exception as e:
+                    logger.warning(f"【{self.cookie_id}】处理消息异常: {self._safe_str(e)}")
+                    continue
+
+            logger.warning(f"【{self.cookie_id}】WebSocket连接关闭，未能发送消息")
+            return False
+        except Exception as e:
+            logger.error(f"【{self.cookie_id}】WebSocket连接处理异常: {self._safe_str(e)}")
+            return False
 
     def is_chat_message(self, message):
         """判断是否为用户聊天消息"""

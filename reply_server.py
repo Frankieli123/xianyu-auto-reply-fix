@@ -6710,6 +6710,170 @@ def get_user_orders(current_user: Dict[str, Any] = Depends(get_current_user)):
         raise HTTPException(status_code=500, detail=f"查询订单失败: {str(e)}")
 
 
+@app.post('/api/orders/{order_id}/deliver')
+async def manual_deliver_order(order_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """手动发货 - 根据订单信息匹配发货规则并发送卡券"""
+    try:
+        from db_manager import db_manager
+        import cookie_manager
+
+        user_id = current_user['user_id']
+        log_with_user('info', f"手动发货请求: 订单 {order_id}", current_user)
+
+        # 获取订单信息
+        order = db_manager.get_order_by_id(order_id)
+        if not order:
+            return {"success": False, "delivered": False, "message": "订单不存在"}
+
+        # 验证订单属于当前用户
+        cookie_id = order.get('cookie_id')
+        if not cookie_id:
+            return {"success": False, "delivered": False, "message": "订单缺少账号信息"}
+
+        cookie_info = db_manager.get_cookie_details(cookie_id)
+        if not cookie_info or cookie_info.get('user_id') != user_id:
+            return {"success": False, "delivered": False, "message": "无权操作此订单"}
+
+        # 获取 XianyuLive 实例
+        xianyu_instance = cookie_manager.manager.get_xianyu_instance(cookie_id) if cookie_manager.manager else None
+        if not xianyu_instance:
+            return {"success": False, "delivered": False, "message": f"账号 {cookie_id} 未运行，请先启动账号"}
+
+        # 获取订单详情
+        item_id = order.get('item_id')
+        buyer_id = order.get('buyer_id')
+
+        if not item_id:
+            return {"success": False, "delivered": False, "message": "订单缺少商品信息"}
+
+        if not buyer_id:
+            return {"success": False, "delivered": False, "message": "订单缺少买家信息，无法发送消息"}
+
+        # 获取商品标题
+        item_info = db_manager.get_item_info(cookie_id, item_id)
+        item_title = item_info.get('item_title', '') if item_info else ''
+
+        # 调用自动发货逻辑获取发货内容
+        delivery_content = await xianyu_instance._auto_delivery(
+            item_id=item_id,
+            item_title=item_title,
+            order_id=order_id,
+            send_user_id=buyer_id
+        )
+
+        if delivery_content:
+            # 发送发货内容给买家
+            try:
+                if delivery_content.startswith("__IMAGE_SEND__"):
+                    # 图片类型暂不支持手动发货
+                    log_with_user('warning', f"手动发货: 订单 {order_id} 为图片类型，暂不支持手动发送", current_user)
+                    return {"success": False, "delivered": False, "message": "图片类型卡券暂不支持手动发货"}
+                else:
+                    # 使用现有的WebSocket连接发送消息（与自动发货逻辑一致）
+                    ws = getattr(xianyu_instance, 'ws', None)
+                    if ws:
+                        # 获取订单的sid（会话ID）
+                        sid = order.get('sid', '')
+                        if sid:
+                            # 提取cid部分（去掉@goofish后缀）
+                            cid = sid.replace('@goofish', '')
+                            log_with_user('info', f"手动发货: 使用现有WebSocket连接发送, cid={cid}, buyer_id={buyer_id}", current_user)
+                            await xianyu_instance.send_msg(ws, cid, buyer_id, delivery_content)
+                        else:
+                            # 如果没有sid，尝试用buyer_id作为cid
+                            log_with_user('warning', f"手动发货: 订单无sid，尝试使用buyer_id作为cid", current_user)
+                            await xianyu_instance.send_msg(ws, buyer_id, buyer_id, delivery_content)
+                    else:
+                        # 没有现有连接，回退到send_msg_once
+                        log_with_user('warning', f"手动发货: 无现有WebSocket连接，使用send_msg_once", current_user)
+                        await xianyu_instance.send_msg_once(buyer_id, item_id, delivery_content)
+                    log_with_user('info', f"手动发货消息已发送: 订单 {order_id}, 买家 {buyer_id}", current_user)
+
+                # 更新订单状态为已发货
+                db_manager.insert_or_update_order(order_id=order_id, order_status='shipped')
+                log_with_user('info', f"手动发货成功: 订单 {order_id}", current_user)
+                return {"success": True, "delivered": True, "message": "发货成功，消息已发送给买家"}
+            except Exception as send_error:
+                log_with_user('error', f"手动发货发送消息失败: 订单 {order_id} - {str(send_error)}", current_user)
+                return {"success": False, "delivered": False, "message": f"获取发货内容成功但发送消息失败: {str(send_error)}"}
+        else:
+            log_with_user('warning', f"手动发货失败: 订单 {order_id} - 未匹配到发货规则", current_user)
+            return {"success": False, "delivered": False, "message": "未匹配到发货规则，请检查卡券和发货规则配置"}
+
+    except Exception as e:
+        log_with_user('error', f"手动发货异常: 订单 {order_id} - {str(e)}", current_user)
+        import traceback
+        logger.error(f"手动发货异常堆栈: {traceback.format_exc()}")
+        return {"success": False, "delivered": False, "message": f"发货失败: {str(e)}"}
+
+
+@app.post('/api/orders/{order_id}/refresh')
+async def refresh_order_status(order_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """刷新订单状态 - 从闲鱼平台获取最新订单状态"""
+    try:
+        from db_manager import db_manager
+        import cookie_manager
+
+        user_id = current_user['user_id']
+        log_with_user('info', f"刷新订单状态请求: 订单 {order_id}", current_user)
+
+        # 获取订单信息
+        order = db_manager.get_order_by_id(order_id)
+        if not order:
+            return {"success": False, "updated": False, "message": "订单不存在"}
+
+        old_status = order.get('order_status', '')
+
+        # 验证订单属于当前用户
+        cookie_id = order.get('cookie_id')
+        if not cookie_id:
+            return {"success": False, "updated": False, "message": "订单缺少账号信息"}
+
+        cookie_info = db_manager.get_cookie_details(cookie_id)
+        if not cookie_info or cookie_info.get('user_id') != user_id:
+            return {"success": False, "updated": False, "message": "无权操作此订单"}
+
+        # 获取 XianyuLive 实例
+        xianyu_instance = cookie_manager.manager.get_xianyu_instance(cookie_id) if cookie_manager.manager else None
+        if not xianyu_instance:
+            return {"success": False, "updated": False, "message": f"账号 {cookie_id} 未运行，请先启动账号"}
+
+        # 获取订单详情（强制从闲鱼平台获取最新信息，跳过缓存）
+        item_id = order.get('item_id')
+        buyer_id = order.get('buyer_id')
+        sid = order.get('sid')
+
+        result = await xianyu_instance.fetch_order_detail_info(
+            order_id=order_id,
+            item_id=item_id,
+            buyer_id=buyer_id,
+            sid=sid,
+            force_refresh=True  # 强制刷新，跳过缓存
+        )
+
+        if result:
+            # 获取更新后的订单信息
+            updated_order = db_manager.get_order_by_id(order_id)
+            new_status = updated_order.get('order_status', '') if updated_order else ''
+            status_changed = old_status != new_status
+            log_with_user('info', f"刷新订单状态成功: 订单 {order_id}, 状态: {old_status} -> {new_status}", current_user)
+            return {
+                "success": True,
+                "updated": status_changed,
+                "new_status": new_status,
+                "message": f"状态已更新: {new_status}" if status_changed else "订单状态无变化"
+            }
+        else:
+            log_with_user('warning', f"刷新订单状态失败: 订单 {order_id}", current_user)
+            return {"success": False, "updated": False, "message": "获取订单详情失败，请稍后重试"}
+
+    except Exception as e:
+        log_with_user('error', f"刷新订单状态异常: 订单 {order_id} - {str(e)}", current_user)
+        import traceback
+        logger.error(f"刷新订单状态异常堆栈: {traceback.format_exc()}")
+        return {"success": False, "updated": False, "message": f"刷新失败: {str(e)}"}
+
+
 # ==================== 自动更新接口 ====================
 
 from auto_updater import get_updater, UpdateStatus, init_updater
