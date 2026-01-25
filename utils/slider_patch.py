@@ -50,45 +50,50 @@ def send_notification(user_id: str, title: str, message: str, notification_type:
         
         async def send_notifications_async():
             notification_sent = False
-            
+
             for notification in notifications:
                 if not notification.get('enabled', True):
                     continue
-                
+
                 channel_type = notification.get('channel_type')
                 channel_config = notification.get('channel_config')
                 channel_name = notification.get('channel_name', channel_type)
-                
+
                 try:
                     import json
+                    import aiohttp
                     if isinstance(channel_config, str):
                         config_data = json.loads(channel_config)
                     else:
                         config_data = channel_config
-                    
-                    # 邮件通知
-                    smtp_server = config_data.get('smtp_server', '')
-                    email_user = config_data.get('email_user', '')
-                    email_password = config_data.get('email_password', '')
-                    recipient_email = config_data.get('recipient_email', '')
-                    smtp_from = config_data.get('smtp_from', email_user)  # 发件人显示名称，默认使用邮箱地址
-                    smtp_use_ssl = config_data.get('smtp_use_ssl', smtp_port == 465)  # 端口465默认使用SSL
-                    smtp_use_tls = config_data.get('smtp_use_tls', smtp_port == 587)  # 端口587默认使用TLS
-                    
-                    if smtp_server and email_user and email_password and recipient_email:
-                        try:
-                            import smtplib
-                            from email.mime.text import MIMEText
-                            from email.mime.multipart import MIMEMultipart
-                            
-                            # 创建邮件
-                            msg = MIMEMultipart()
-                            msg['From'] = smtp_from
-                            msg['To'] = recipient_email
-                            msg['Subject'] = f"闲鱼自动回复通知 - {title}"
-                            
-                            # 邮件正文
-                            email_body = f"""【闲鱼自动回复系统通知】
+
+                    # 调试日志：输出配置数据
+                    logger.debug(f"【{user_id}】渠道 {channel_type} 配置: {config_data}")
+
+                    # 根据渠道类型发送通知
+                    if channel_type == 'email':
+                        # 邮件通知
+                        smtp_server = config_data.get('smtp_server', '')
+                        smtp_port = config_data.get('smtp_port', 465)
+                        email_user = config_data.get('email_user', '')
+                        email_password = config_data.get('email_password', '')
+                        recipient_email = config_data.get('recipient_email', '')
+                        smtp_from = config_data.get('smtp_from', email_user)
+                        smtp_use_ssl = config_data.get('smtp_use_ssl', smtp_port == 465)
+                        smtp_use_tls = config_data.get('smtp_use_tls', smtp_port == 587)
+
+                        if smtp_server and email_user and email_password and recipient_email:
+                            try:
+                                import smtplib
+                                from email.mime.text import MIMEText
+                                from email.mime.multipart import MIMEMultipart
+
+                                msg = MIMEMultipart()
+                                msg['From'] = smtp_from
+                                msg['To'] = recipient_email
+                                msg['Subject'] = f"闲鱼自动回复通知 - {title}"
+
+                                email_body = f"""【闲鱼自动回复系统通知】
 
 标题：{title}
 
@@ -100,38 +105,173 @@ def send_notification(user_id: str, title: str, message: str, notification_type:
 账号ID：{user_id}
 时间：{time.strftime('%Y-%m-%d %H:%M:%S')}
 
-此邮件由系统自动发送，请勿直接回复
-© 2025 闲鱼自动回复系统"""
-                            
-                            msg.attach(MIMEText(email_body, 'plain', 'utf-8'))
-                            
-                            # 定义同步发送邮件的函数
-                            def send_email_sync():
-                                # 根据配置选择SSL或TLS连接方式
-                                if smtp_use_ssl:
-                                    # 使用SSL连接（端口465）
-                                    server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=30)
-                                else:
-                                    # 使用普通连接，然后升级到TLS（端口587）
-                                    server = smtplib.SMTP(smtp_server, smtp_port, timeout=30)
-                                    if smtp_use_tls:
-                                        server.starttls()
-                                
-                                server.login(email_user, email_password)
-                                server.sendmail(email_user, [recipient_email], msg.as_string())
-                                server.quit()
-                            
-                            # 在线程池中执行同步邮件发送
-                            loop = asyncio.get_event_loop()
-                            await loop.run_in_executor(None, send_email_sync)
-                            
-                            logger.info(f"【{user_id}】邮件通知发送成功 ({channel_name}) - {'SSL' if smtp_use_ssl else 'TLS' if smtp_use_tls else 'Plain'}")
-                            notification_sent = True
-                        except Exception as email_error:
-                            logger.error(f"【{user_id}】邮件通知发送失败: {email_error}")
+此邮件由系统自动发送，请勿直接回复"""
+
+                                msg.attach(MIMEText(email_body, 'plain', 'utf-8'))
+
+                                def send_email_sync():
+                                    if smtp_use_ssl:
+                                        server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=30)
+                                    else:
+                                        server = smtplib.SMTP(smtp_server, smtp_port, timeout=30)
+                                        if smtp_use_tls:
+                                            server.starttls()
+                                    server.login(email_user, email_password)
+                                    server.sendmail(email_user, [recipient_email], msg.as_string())
+                                    server.quit()
+
+                                loop = asyncio.get_event_loop()
+                                await loop.run_in_executor(None, send_email_sync)
+
+                                logger.info(f"【{user_id}】邮件通知发送成功 ({channel_name})")
+                                notification_sent = True
+                            except Exception as email_error:
+                                logger.error(f"【{user_id}】邮件通知发送失败: {email_error}")
+                        else:
+                            logger.warning(f"【{user_id}】邮件通知配置不完整")
+
+                    elif channel_type == 'feishu':
+                        # 飞书通知
+                        webhook_url = config_data.get('webhook_url', '')
+                        if webhook_url:
+                            try:
+                                payload = {
+                                    "msg_type": "text",
+                                    "content": {
+                                        "text": f"【闲鱼通知】{title}\n\n{message}\n\n账号ID: {user_id}\n时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+                                    }
+                                }
+                                async with aiohttp.ClientSession() as session:
+                                    async with session.post(webhook_url, json=payload, timeout=10) as resp:
+                                        if resp.status == 200:
+                                            logger.info(f"【{user_id}】飞书通知发送成功 ({channel_name})")
+                                            notification_sent = True
+                                        else:
+                                            logger.error(f"【{user_id}】飞书通知发送失败: HTTP {resp.status}")
+                            except Exception as feishu_error:
+                                logger.error(f"【{user_id}】飞书通知发送失败: {feishu_error}")
+                        else:
+                            logger.warning(f"【{user_id}】飞书通知未配置webhook")
+
+                    elif channel_type == 'dingtalk':
+                        # 钉钉通知
+                        webhook_url = config_data.get('webhook_url', '')
+                        if webhook_url:
+                            try:
+                                payload = {
+                                    "msgtype": "text",
+                                    "text": {
+                                        "content": f"【闲鱼通知】{title}\n\n{message}\n\n账号ID: {user_id}\n时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+                                    }
+                                }
+                                async with aiohttp.ClientSession() as session:
+                                    async with session.post(webhook_url, json=payload, timeout=10) as resp:
+                                        if resp.status == 200:
+                                            logger.info(f"【{user_id}】钉钉通知发送成功 ({channel_name})")
+                                            notification_sent = True
+                                        else:
+                                            logger.error(f"【{user_id}】钉钉通知发送失败: HTTP {resp.status}")
+                            except Exception as dingtalk_error:
+                                logger.error(f"【{user_id}】钉钉通知发送失败: {dingtalk_error}")
+                        else:
+                            logger.warning(f"【{user_id}】钉钉通知未配置webhook")
+
+                    elif channel_type == 'bark':
+                        # Bark通知 (iOS推送)
+                        device_key = config_data.get('device_key', '')
+                        server_url = config_data.get('server_url', 'https://api.day.app')
+                        if device_key:
+                            try:
+                                # Bark URL格式: https://api.day.app/YOUR_KEY/title/message
+                                import urllib.parse
+                                encoded_title = urllib.parse.quote(title)
+                                encoded_message = urllib.parse.quote(message)
+                                full_url = f"{server_url.rstrip('/')}/{device_key}/{encoded_title}/{encoded_message}"
+                                async with aiohttp.ClientSession() as session:
+                                    async with session.get(full_url, timeout=10) as resp:
+                                        if resp.status == 200:
+                                            logger.info(f"【{user_id}】Bark通知发送成功 ({channel_name})")
+                                            notification_sent = True
+                                        else:
+                                            logger.error(f"【{user_id}】Bark通知发送失败: HTTP {resp.status}")
+                            except Exception as bark_error:
+                                logger.error(f"【{user_id}】Bark通知发送失败: {bark_error}")
+                        else:
+                            logger.warning(f"【{user_id}】Bark通知未配置设备密钥(device_key)")
+
+                    elif channel_type == 'telegram':
+                        # Telegram通知
+                        bot_token = config_data.get('bot_token', '')
+                        chat_id = config_data.get('chat_id', '')
+                        if bot_token and chat_id:
+                            try:
+                                telegram_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                                payload = {
+                                    "chat_id": chat_id,
+                                    "text": f"【闲鱼通知】{title}\n\n{message}\n\n账号ID: {user_id}\n时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+                                }
+                                async with aiohttp.ClientSession() as session:
+                                    async with session.post(telegram_url, json=payload, timeout=10) as resp:
+                                        if resp.status == 200:
+                                            logger.info(f"【{user_id}】Telegram通知发送成功 ({channel_name})")
+                                            notification_sent = True
+                                        else:
+                                            logger.error(f"【{user_id}】Telegram通知发送失败: HTTP {resp.status}")
+                            except Exception as telegram_error:
+                                logger.error(f"【{user_id}】Telegram通知发送失败: {telegram_error}")
+                        else:
+                            logger.warning(f"【{user_id}】Telegram通知配置不完整")
+
+                    elif channel_type == 'webhook':
+                        # 自定义Webhook通知
+                        webhook_url = config_data.get('url', '')
+                        if webhook_url:
+                            try:
+                                payload = {
+                                    "title": title,
+                                    "message": message,
+                                    "user_id": user_id,
+                                    "notification_type": notification_type,
+                                    "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
+                                }
+                                async with aiohttp.ClientSession() as session:
+                                    async with session.post(webhook_url, json=payload, timeout=10) as resp:
+                                        if resp.status == 200:
+                                            logger.info(f"【{user_id}】Webhook通知发送成功 ({channel_name})")
+                                            notification_sent = True
+                                        else:
+                                            logger.error(f"【{user_id}】Webhook通知发送失败: HTTP {resp.status}")
+                            except Exception as webhook_error:
+                                logger.error(f"【{user_id}】Webhook通知发送失败: {webhook_error}")
+                        else:
+                            logger.warning(f"【{user_id}】Webhook未配置URL")
+
+                    elif channel_type == 'wechat':
+                        # 企业微信通知
+                        webhook_url = config_data.get('webhook_url', '')
+                        if webhook_url:
+                            try:
+                                payload = {
+                                    "msgtype": "text",
+                                    "text": {
+                                        "content": f"【闲鱼通知】{title}\n\n{message}\n\n账号ID: {user_id}\n时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+                                    }
+                                }
+                                async with aiohttp.ClientSession() as session:
+                                    async with session.post(webhook_url, json=payload, timeout=10) as resp:
+                                        if resp.status == 200:
+                                            logger.info(f"【{user_id}】企业微信通知发送成功 ({channel_name})")
+                                            notification_sent = True
+                                        else:
+                                            logger.error(f"【{user_id}】企业微信通知发送失败: HTTP {resp.status}")
+                            except Exception as wechat_error:
+                                logger.error(f"【{user_id}】企业微信通知发送失败: {wechat_error}")
+                        else:
+                            logger.warning(f"【{user_id}】企业微信通知未配置webhook")
+
                     else:
-                        logger.warning(f"【{user_id}】邮件通知配置不完整")
-                
+                        logger.warning(f"【{user_id}】未知的通知渠道类型: {channel_type}")
+
                 except Exception as notify_error:
                     logger.error(f"【{user_id}】发送通知失败 ({channel_name}): {notify_error}")
             
