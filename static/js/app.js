@@ -12041,7 +12041,9 @@ async function loadCookieFilterOptions() {
                 data.cookies.forEach(cookie => {
                     const option = document.createElement('option');
                     option.value = cookie.cookie_id;
-                    option.textContent = `${cookie.cookie_id} (${cookie.nickname || '未知'})`;
+                    // 优先显示备注，其次显示用户名，都没有则不显示括号
+                    const displayName = cookie.nickname || cookie.username || '';
+                    option.textContent = displayName ? `${cookie.cookie_id} (${displayName})` : cookie.cookie_id;
                     select.appendChild(option);
                 });
             }
