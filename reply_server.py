@@ -4959,6 +4959,18 @@ def get_delivery_rules(current_user: Dict[str, Any] = Depends(get_current_user))
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/delivery-rules/stats")
+def get_delivery_stats(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """获取发货统计信息"""
+    try:
+        from db_manager import db_manager
+        user_id = current_user['user_id']
+        today_count = db_manager.get_today_delivery_count(user_id)
+        return {"today_delivery_count": today_count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/delivery-rules")
 def create_delivery_rule(rule_data: dict, current_user: Dict[str, Any] = Depends(get_current_user)):
     """创建新发货规则"""

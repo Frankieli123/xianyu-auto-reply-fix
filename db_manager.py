@@ -728,6 +728,15 @@ class DBManager:
                     # user_id列存在，更新NULL值
                     self._execute_sql(cursor, "UPDATE delivery_rules SET user_id = ? WHERE user_id IS NULL", (admin_user_id,))
 
+                # 为delivery_rules表添加今日发货统计字段（如果不存在）
+                try:
+                    self._execute_sql(cursor, "SELECT last_delivery_date FROM delivery_rules LIMIT 1")
+                except sqlite3.OperationalError:
+                    # 今日发货字段不存在，需要添加
+                    self._execute_sql(cursor, "ALTER TABLE delivery_rules ADD COLUMN last_delivery_date DATE")
+                    self._execute_sql(cursor, "ALTER TABLE delivery_rules ADD COLUMN today_delivery_times INTEGER DEFAULT 0")
+                    logger.info("已添加 last_delivery_date 和 today_delivery_times 字段到 delivery_rules 表")
+
                 # 为notification_channels表添加user_id字段（如果不存在）
                 try:
                     self._execute_sql(cursor, "SELECT user_id FROM notification_channels LIMIT 1")
@@ -3913,19 +3922,67 @@ class DBManager:
                 raise
 
     def increment_delivery_times(self, rule_id: int):
-        """增加发货次数"""
+        """增加发货次数（同时更新今日发货次数）"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
-                cursor.execute('''
-                UPDATE delivery_rules
-                SET delivery_times = delivery_times + 1, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                ''', (rule_id,))
+                today = datetime.now().strftime('%Y-%m-%d')
+
+                # 先查询当前规则的最后发货日期
+                cursor.execute('SELECT last_delivery_date FROM delivery_rules WHERE id = ?', (rule_id,))
+                row = cursor.fetchone()
+                last_date = row[0] if row else None
+
+                if last_date == today:
+                    # 今天已有发货记录，增加今日发货次数
+                    cursor.execute('''
+                    UPDATE delivery_rules
+                    SET delivery_times = delivery_times + 1,
+                        today_delivery_times = today_delivery_times + 1,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    ''', (rule_id,))
+                else:
+                    # 新的一天，重置今日发货次数为1
+                    cursor.execute('''
+                    UPDATE delivery_rules
+                    SET delivery_times = delivery_times + 1,
+                        last_delivery_date = ?,
+                        today_delivery_times = 1,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    ''', (today, rule_id))
+
                 self.conn.commit()
                 logger.debug(f"发货规则 {rule_id} 发货次数已增加")
             except Exception as e:
                 logger.error(f"更新发货次数失败: {e}")
+
+    def get_today_delivery_count(self, user_id: int = None):
+        """获取今日发货总数"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                today = datetime.now().strftime('%Y-%m-%d')
+
+                if user_id is not None:
+                    cursor.execute('''
+                    SELECT COALESCE(SUM(today_delivery_times), 0)
+                    FROM delivery_rules
+                    WHERE last_delivery_date = ? AND user_id = ?
+                    ''', (today, user_id))
+                else:
+                    cursor.execute('''
+                    SELECT COALESCE(SUM(today_delivery_times), 0)
+                    FROM delivery_rules
+                    WHERE last_delivery_date = ?
+                    ''', (today,))
+
+                row = cursor.fetchone()
+                return row[0] if row else 0
+            except Exception as e:
+                logger.error(f"获取今日发货统计失败: {e}")
+                return 0
 
     def get_delivery_rules_by_keyword_and_spec(self, keyword: str, spec_name: str = None, spec_value: str = None,
                                                spec_name_2: str = None, spec_value_2: str = None, user_id: int = None):

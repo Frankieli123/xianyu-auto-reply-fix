@@ -5139,16 +5139,32 @@ function renderDeliveryRulesList(rules) {
 }
 
 // 更新发货统计
-function updateDeliveryStats(rules) {
+async function updateDeliveryStats(rules) {
     const totalRules = rules.length;
     const activeRules = rules.filter(rule => rule.enabled).length;
-    const todayDeliveries = 0; // 需要从后端获取今日发货统计
     const totalDeliveries = rules.reduce((sum, rule) => sum + (rule.delivery_times || 0), 0);
 
     document.getElementById('totalRules').textContent = totalRules;
     document.getElementById('activeRules').textContent = activeRules;
-    document.getElementById('todayDeliveries').textContent = todayDeliveries;
     document.getElementById('totalDeliveries').textContent = totalDeliveries;
+
+    // 从后端获取今日发货统计
+    try {
+        const response = await fetch(`${apiBase}/delivery-rules/stats`, {
+            headers: {
+                'Authorization': `Bearer ${authToken}`
+            }
+        });
+        if (response.ok) {
+            const stats = await response.json();
+            document.getElementById('todayDeliveries').textContent = stats.today_delivery_count || 0;
+        } else {
+            document.getElementById('todayDeliveries').textContent = 0;
+        }
+    } catch (error) {
+        console.error('获取今日发货统计失败:', error);
+        document.getElementById('todayDeliveries').textContent = 0;
+    }
 }
 
 // 显示添加发货规则模态框
