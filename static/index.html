@@ -4,9 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>闲鱼自动回复管理系统</title>
+  <link rel="icon" type="image/png" href="/static/favicon.png">
   <link rel="stylesheet" href="/static/lib/bootstrap/bootstrap.min.css">
   <link rel="stylesheet" href="/static/lib/bootstrap-icons/bootstrap-icons.css">
-  
+
   <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body>
@@ -19,7 +20,7 @@
   <div class="sidebar" id="sidebar">
     <div class="sidebar-header">
       <a href="#" class="sidebar-brand">
-        <i class="bi bi-chat-dots-fill me-2"></i>
+        <img src="/static/favicon.png" alt="Logo" height="24" class="me-2">
         闲鱼管理系统
       </a>
     </div>
@@ -85,9 +86,9 @@
         </a>
       </div>
       <div class="nav-item">
-        <a href="#" class="nav-link" onclick="showSection('item-search')">
-          <i class="bi bi-search"></i>
-          商品搜索
+        <a href="#" class="nav-link" onclick="showSection('online-im')">
+          <i class="bi bi-headset"></i>
+          在线客服
         </a>
       </div>
       <div class="nav-item">
@@ -1659,6 +1660,65 @@
             <ul class="pagination pagination-sm mb-0" id="riskLogPagination">
             </ul>
           </nav>
+        </div>
+      </div>
+    </div>
+
+    <!-- 在线客服内容 -->
+    <div id="online-im-section" class="content-section">
+      <div class="content-header">
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+          <div>
+            <h2 class="mb-0">
+              <i class="bi bi-headset me-2"></i>
+              在线客服
+            </h2>
+            <p class="text-muted mb-0">内嵌闲鱼IM页面，快速处理客户咨询</p>
+          </div>
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            <select class="form-select form-select-sm" id="imAccountSelect" style="width: auto; min-width: 150px;" onchange="onImAccountChange()">
+              <option value="">-- 选择账号 --</option>
+            </select>
+            <!-- 账号密码信息显示在选择框旁边 -->
+            <div id="imAccountInfoBar" class="d-flex flex-column gap-1">
+              <div class="d-flex align-items-center gap-1">
+                <span class="text-muted small">账号:</span>
+                <code id="imDisplayUsername" class="bg-light px-2 py-1 rounded small text-center" style="min-width: 120px; display: inline-block;">-</code>
+                <button class="btn btn-link btn-sm p-0 text-primary" onclick="copyImUsername()" title="复制账号">
+                  <i class="bi bi-clipboard"></i>
+                </button>
+              </div>
+              <div class="d-flex align-items-center gap-1">
+                <span class="text-muted small">密码:</span>
+                <code id="imDisplayPassword" class="bg-light px-2 py-1 rounded small text-center" style="min-width: 120px; display: inline-block;">-</code>
+                <button class="btn btn-link btn-sm p-0 text-primary" onclick="copyImPassword()" title="复制密码">
+                  <i class="bi bi-clipboard"></i>
+                </button>
+              </div>
+            </div>
+            <button class="btn btn-sm btn-outline-secondary" onclick="loadImAccountList()" title="刷新账号列表">
+              <i class="bi bi-arrow-clockwise"></i>
+            </button>
+            <button class="btn btn-sm btn-outline-success" onclick="refreshImIframe()" title="刷新页面">
+              <i class="bi bi-arrow-repeat"></i> 刷新
+            </button>
+            <button class="btn btn-sm btn-success" onclick="openGoofishImNewWindow()" title="在新窗口打开">
+              <i class="bi bi-box-arrow-up-right"></i> 新窗口
+            </button>
+          </div>
+        </div>
+      </div>
+      <div class="content-body p-0">
+        <!-- 内嵌闲鱼IM iframe -->
+        <div class="im-iframe-container" style="height: calc(100vh - 160px); min-height: 600px;">
+          <iframe
+            id="goofishImIframe"
+            src="about:blank"
+            data-src="https://www.goofish.com/im"
+            style="width: 100%; height: 100%; border: none;"
+            allow="microphone; camera; clipboard-read; clipboard-write"
+            sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
+          ></iframe>
         </div>
       </div>
     </div>

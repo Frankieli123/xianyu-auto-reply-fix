@@ -127,6 +127,9 @@ function showSection(sectionName) {
     case 'user-management':  // 【用户管理菜单】
         loadUserManagement();
         break;
+    case 'online-im':        // 【在线客服菜单】
+        loadOnlineIm();
+        break;
     case 'data-management':  // 【数据管理菜单】
         loadDataManagement();
         break;
@@ -6229,11 +6232,54 @@ async function reloadSystemCache() {
     }
 }
 
-// 重启系统
-async function restartSystem() {
-    // 二次确认
-    if (!confirm('确定要重启系统吗？\n\n重启期间系统将暂时不可用，所有账号任务将重新启动。')) {
-        return;
+// 重启系统 - 显示确认对话框
+function restartSystem() {
+    // 使用 Bootstrap 模态框进行二次确认
+    const modalHtml = `
+        <div class="modal fade" id="restartConfirmModal" tabindex="-1">
+            <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content">
+                    <div class="modal-header bg-danger text-white">
+                        <h5 class="modal-title">
+                            <i class="bi bi-exclamation-triangle me-2"></i>确认重启系统
+                        </h5>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <p class="mb-2"><strong>确定要重启系统吗？</strong></p>
+                        <p class="text-muted mb-0">重启期间系统将暂时不可用，所有账号任务将重新启动。</p>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                        <button type="button" class="btn btn-danger" onclick="doRestartSystem()">
+                            <i class="bi bi-power me-1"></i>确认重启
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    // 移除已存在的模态框
+    const existingModal = document.getElementById('restartConfirmModal');
+    if (existingModal) {
+        existingModal.remove();
+    }
+
+    // 添加模态框到页面
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+    // 显示模态框
+    const modal = new bootstrap.Modal(document.getElementById('restartConfirmModal'));
+    modal.show();
+}
+
+// 执行重启系统
+async function doRestartSystem() {
+    // 关闭确认模态框
+    const confirmModal = bootstrap.Modal.getInstance(document.getElementById('restartConfirmModal'));
+    if (confirmModal) {
+        confirmModal.hide();
     }
 
     try {
@@ -13936,4 +13982,216 @@ hotUpdateStyle.textContent = `
     }
 `;
 document.head.appendChild(hotUpdateStyle);
+
+// ==================== 在线客服IM功能 ====================
+
+// 存储IM账号数据
+let imAccountsData = [];
+
+/**
+ * 加载IM账号列表
+ */
+async function loadImAccountList() {
+    try {
+        // 重置账号密码显示为默认值
+        const usernameEl = document.getElementById('imDisplayUsername');
+        const passwordEl = document.getElementById('imDisplayPassword');
+        if (usernameEl) usernameEl.textContent = '-';
+        if (passwordEl) passwordEl.textContent = '-';
+
+        const response = await fetch(`${apiBase}/cookies/details`, {
+            headers: {
+                'Authorization': `Bearer ${authToken}`
+            }
+        });
+
+        if (response.ok) {
+            const data = await response.json();
+            imAccountsData = data || [];
+
+            const select = document.getElementById('imAccountSelect');
+            if (select) {
+                select.innerHTML = '<option value="">-- 选择账号 --</option>';
+
+                imAccountsData.forEach(account => {
+                    const option = document.createElement('option');
+                    option.value = account.id;
+                    option.textContent = account.id;
+                    // 存储用户名和密码在data属性中
+                    option.dataset.username = account.username || '';
+                    option.dataset.password = account.password || '';
+                    select.appendChild(option);
+                });
+            }
+        } else {
+            console.error('加载IM账号列表失败:', response.status);
+        }
+    } catch (error) {
+        console.error('加载IM账号列表失败:', error);
+    }
+}
+
+/**
+ * 账号选择变化时的处理
+ */
+function onImAccountChange() {
+    const select = document.getElementById('imAccountSelect');
+    const usernameEl = document.getElementById('imDisplayUsername');
+    const passwordEl = document.getElementById('imDisplayPassword');
+
+    if (!select) return;
+
+    const selectedOption = select.selectedOptions[0];
+
+    if (selectedOption && selectedOption.value) {
+        const username = selectedOption.dataset.username || '未配置';
+        const password = selectedOption.dataset.password || '';
+
+        if (usernameEl) usernameEl.textContent = username;
+        // 密码显示为密文样式
+        if (passwordEl) {
+            passwordEl.textContent = password ? '••••••••' : '未配置';
+        }
+    } else {
+        // 未选择账号时显示默认值
+        if (usernameEl) usernameEl.textContent = '-';
+        if (passwordEl) passwordEl.textContent = '-';
+    }
+}
+
+/**
+ * 复制账号到剪贴板
+ */
+async function copyImUsername() {
+    const usernameEl = document.getElementById('imDisplayUsername');
+    const username = usernameEl ? usernameEl.textContent : '';
+
+    if (!username || username === '未配置' || username === '-') {
+        showToast('账号未配置', 'warning');
+        return;
+    }
+
+    try {
+        await navigator.clipboard.writeText(username);
+        showToast('账号已复制', 'success');
+    } catch (error) {
+        fallbackCopy(username, '账号已复制', '复制失败');
+    }
+}
+
+/**
+ * 复制密码到剪贴板
+ */
+async function copyImPassword() {
+    const select = document.getElementById('imAccountSelect');
+    if (!select || !select.value) {
+        showToast('请先选择账号', 'warning');
+        return;
+    }
+
+    const selectedOption = select.selectedOptions[0];
+    const password = selectedOption.dataset.password || '';
+
+    if (!password || password === '未配置') {
+        showToast('密码未配置', 'warning');
+        return;
+    }
+
+    try {
+        await navigator.clipboard.writeText(password);
+        showToast('密码已复制', 'success');
+    } catch (error) {
+        fallbackCopy(password, '密码已复制', '复制失败');
+    }
+}
+
+/**
+ * 降级复制方案
+ */
+function fallbackCopy(text, successMsg, failMsg) {
+    const textArea = document.createElement('textarea');
+    textArea.value = text;
+    textArea.style.position = 'fixed';
+    textArea.style.left = '-9999px';
+    document.body.appendChild(textArea);
+    textArea.select();
+
+    try {
+        document.execCommand('copy');
+        showToast(successMsg, 'success');
+    } catch (e) {
+        showToast(failMsg, 'danger');
+    }
+
+    document.body.removeChild(textArea);
+}
+
+/**
+ * 复制账号密码到剪贴板（保留兼容）
+ */
+async function copyImAccountInfo() {
+    const select = document.getElementById('imAccountSelect');
+
+    if (!select || !select.value) {
+        showToast('请先选择一个账号', 'warning');
+        return;
+    }
+
+    const selectedOption = select.selectedOptions[0];
+    const username = selectedOption.dataset.username || '';
+    const password = selectedOption.dataset.password || '';
+
+    if (!username && !password) {
+        showToast('该账号未配置用户名和密码', 'warning');
+        return;
+    }
+
+    const copyText = `账号：${username}\n密码：${password}`;
+
+    try {
+        await navigator.clipboard.writeText(copyText);
+        showToast('账号密码已复制到剪贴板', 'success');
+    } catch (error) {
+        fallbackCopy(copyText, '账号密码已复制到剪贴板', '复制失败，请手动复制');
+    }
+}
+
+/**
+ * 刷新IM iframe
+ */
+function refreshImIframe() {
+    const iframe = document.getElementById('goofishImIframe');
+    if (iframe) {
+        iframe.src = iframe.src;
+        showToast('页面已刷新', 'success');
+    }
+}
+
+/**
+ * 在新窗口打开闲鱼IM
+ */
+function openGoofishImNewWindow() {
+    window.open('https://www.goofish.com/im', '_blank');
+}
+
+/**
+ * 兼容旧版函数名
+ */
+function openGoofishIm() {
+    openGoofishImNewWindow();
+}
+
+/**
+ * 加载在线客服页面
+ */
+function loadOnlineIm() {
+    loadImAccountList();
+
+    // 延迟加载 iframe，避免页面加载时直接加载闲鱼导致跳转问题
+    const iframe = document.getElementById('goofishImIframe');
+    if (iframe && iframe.src === 'about:blank') {
+        const realSrc = iframe.dataset.src || 'https://www.goofish.com/im';
+        iframe.src = realSrc;
+    }
+}
 
