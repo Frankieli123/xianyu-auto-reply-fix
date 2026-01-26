@@ -5148,7 +5148,12 @@ async function updateDeliveryStats(rules) {
     document.getElementById('activeRules').textContent = activeRules;
     document.getElementById('totalDeliveries').textContent = totalDeliveries;
 
-    // 从后端获取今日发货统计
+    // 刷新今日发货统计
+    await refreshTodayDeliveryCount();
+}
+
+// 刷新今日发货统计（独立函数，可在发货后单独调用）
+async function refreshTodayDeliveryCount() {
     try {
         const response = await fetch(`${apiBase}/delivery-rules/stats`, {
             headers: {
@@ -5157,13 +5162,13 @@ async function updateDeliveryStats(rules) {
         });
         if (response.ok) {
             const stats = await response.json();
-            document.getElementById('todayDeliveries').textContent = stats.today_delivery_count || 0;
-        } else {
-            document.getElementById('todayDeliveries').textContent = 0;
+            const todayEl = document.getElementById('todayDeliveries');
+            if (todayEl) {
+                todayEl.textContent = stats.today_delivery_count || 0;
+            }
         }
     } catch (error) {
         console.error('获取今日发货统计失败:', error);
-        document.getElementById('todayDeliveries').textContent = 0;
     }
 }
 
@@ -10742,6 +10747,8 @@ async function manualDeliverOrder(orderId) {
         if (response.ok) {
             if (result.delivered) {
                 showToast(`发货成功！\n${result.message}`, 'success');
+                // 刷新今日发货统计
+                refreshTodayDeliveryCount();
             } else {
                 showToast(`发货失败: ${result.message}`, 'warning');
             }
