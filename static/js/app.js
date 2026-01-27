@@ -13048,7 +13048,7 @@ function exportSearchResults() {
 
 
 // 默认版本号（当无法读取 version.txt 时使用）
-const DEFAULT_VERSION = 'v1.1.4';
+const DEFAULT_VERSION = 'v1.1.7';
 
 // 当前本地版本号（动态从 version.txt 读取）
 let LOCAL_VERSION = DEFAULT_VERSION;
@@ -13061,9 +13061,43 @@ let remoteVersionInfo = null;
 
 // 本地版本历史（远程服务禁用时使用）
 const LOCAL_VERSION_HISTORY = {
-    version: 'v1.1.4',
+    version: 'v1.1.7',
     intro: '本系统仅供个人学习研究使用，请勿用于商业用途。如有问题或建议，欢迎反馈。',
     versionHistory: [
+        {
+            version: 'v1.1.7',
+            date: '2026-01-28',
+            updates: [
+                '【菜单管理】新增拖拽排序功能',
+                '【菜单管理】按住拖动图标可调整菜单顺序',
+                '【菜单管理】菜单顺序自动保存到用户配置',
+                '【版本信息】点击版本号可查看更新日志',
+                '【侧边栏】使用CSS order属性实现菜单重排序',
+                '【修复】修复菜单排序后管理员功能和登出按钮位置错乱的问题'
+            ]
+        },
+        {
+            version: 'v1.1.6',
+            date: '2026-01-27',
+            updates: [
+                '【菜单管理】新增侧边栏菜单显示/隐藏功能',
+                '【菜单管理】在系统设置中可自定义显示哪些菜单项',
+                '【菜单管理】仪表盘和系统设置为必选项，其他菜单可自由开关',
+                '【菜单管理】设置自动保存到用户配置，刷新后保持'
+            ]
+        },
+        {
+            version: 'v1.1.5',
+            date: '2026-01-27',
+            updates: [
+                '【主题设置】新增主题颜色自定义功能',
+                '【主题设置】提供9种预设颜色（靛蓝、紫罗兰、蓝色、青色、绿色、橙色、红色、粉色、灰色）',
+                '【主题设置】支持颜色选择器自定义任意颜色',
+                '【主题设置】支持直接输入颜色代码',
+                '【系统设置】主题设置界面简化，操作更直观',
+                '【系统设置】系统重启按钮移至页面标题栏右侧'
+            ]
+        },
         {
             version: 'v1.1.4',
             date: '2026-01-27',
@@ -13147,12 +13181,12 @@ async function loadSystemVersion() {
         // 显示当前本地版本
         document.getElementById('versionNumber').textContent = LOCAL_VERSION;
         
-        // 添加点击事件，显示版本信息
+        // 添加点击事件，显示更新日志
         const systemVersionBadge = document.getElementById('systemVersion');
         if (systemVersionBadge) {
             systemVersionBadge.style.cursor = 'pointer';
-            systemVersionBadge.title = '点击查看版本详情';
-            systemVersionBadge.onclick = () => showVersionInfo(LOCAL_VERSION);
+            systemVersionBadge.title = '点击查看更新日志';
+            systemVersionBadge.onclick = () => showChangelogModal();
         }
 
         // 从远程PHP获取版本信息（暂时禁用）
