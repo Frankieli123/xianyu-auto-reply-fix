@@ -101,6 +101,7 @@ function showSection(sectionName) {
         break;
     case 'system-settings':    // 【系统设置菜单】
         loadSystemSettings();
+        initMenuManagement();
         break;
     case 'logs':            // 【日志管理菜单】
         // 自动加载系统日志
@@ -2851,6 +2852,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 初始加载仪表盘
     loadDashboard();
+
+    // 加载菜单设置并应用
+    loadMenuSettings();
 
     // 初始化图片关键词事件监听器
     initImageKeywordEventListeners();
@@ -5919,6 +5923,168 @@ function updatePresetSelection(selectedColor) {
             btn.style.boxShadow = 'none';
         }
     });
+}
+
+// ==================== 菜单管理功能 ====================
+
+// 菜单项配置
+const MENU_ITEMS = [
+    { id: 'dashboard', name: '仪表盘', icon: 'bi-speedometer2', required: true },
+    { id: 'accounts', name: '账号管理', icon: 'bi-person-circle', required: false },
+    { id: 'items', name: '商品管理', icon: 'bi-box-seam', required: false },
+    { id: 'orders', name: '订单管理', icon: 'bi-receipt-cutoff', required: false },
+    { id: 'auto-reply', name: '自动回复', icon: 'bi-chat-left-text', required: false },
+    { id: 'items-reply', name: '指定商品回复', icon: 'bi-chat-left-text', required: false },
+    { id: 'cards', name: '卡券管理', icon: 'bi-credit-card', required: false },
+    { id: 'auto-delivery', name: '自动发货', icon: 'bi-truck', required: false },
+    { id: 'notification-channels', name: '通知渠道', icon: 'bi-bell', required: false },
+    { id: 'message-notifications', name: '消息通知', icon: 'bi-chat-dots', required: false },
+    { id: 'online-im', name: '在线客服', icon: 'bi-headset', required: false },
+    { id: 'system-settings', name: '系统设置', icon: 'bi-gear', required: true },
+    { id: 'about', name: '关于', icon: 'bi-info-circle', required: false }
+];
+
+// 当前菜单设置（默认全部显示）
+let menuSettings = {};
+
+// 初始化菜单管理UI
+function initMenuManagement() {
+    const container = document.getElementById('menuManagementList');
+    if (!container) return;
+
+    container.innerHTML = MENU_ITEMS.map(item => `
+        <div class="col-md-4 col-sm-6 mb-2">
+            <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" id="menu-${item.id}"
+                    ${item.required ? 'checked disabled' : 'checked'}
+                    data-menu-id="${item.id}">
+                <label class="form-check-label" for="menu-${item.id}">
+                    <i class="bi ${item.icon} me-1"></i>${item.name}
+                    ${item.required ? '<span class="badge bg-secondary ms-1">必选</span>' : ''}
+                </label>
+            </div>
+        </div>
+    `).join('');
+
+    // 应用已保存的设置
+    applyMenuCheckboxes();
+}
+
+// 应用菜单复选框状态
+function applyMenuCheckboxes() {
+    MENU_ITEMS.forEach(item => {
+        const checkbox = document.getElementById(`menu-${item.id}`);
+        if (checkbox && !item.required) {
+            const isVisible = menuSettings[item.id] !== false; // 默认显示
+            checkbox.checked = isVisible;
+        }
+    });
+}
+
+// 保存菜单设置
+async function saveMenuSettings() {
+    const settings = {};
+    MENU_ITEMS.forEach(item => {
+        if (!item.required) {
+            const checkbox = document.getElementById(`menu-${item.id}`);
+            if (checkbox) {
+                settings[item.id] = checkbox.checked;
+            }
+        }
+    });
+
+    try {
+        await fetch(`${apiBase}/user-settings/menu_visibility`, {
+            method: 'PUT',
+            headers: {
+                'Authorization': `Bearer ${authToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                value: JSON.stringify(settings),
+                description: '菜单显示设置'
+            })
+        });
+
+        menuSettings = settings;
+        applyMenuVisibility();
+        showToast('菜单设置保存成功', 'success');
+    } catch (error) {
+        console.error('保存菜单设置失败:', error);
+        showToast('保存菜单设置失败', 'danger');
+    }
+}
+
+// 重置菜单设置
+async function resetMenuSettings() {
+    // 重置所有复选框为选中状态
+    MENU_ITEMS.forEach(item => {
+        const checkbox = document.getElementById(`menu-${item.id}`);
+        if (checkbox && !item.required) {
+            checkbox.checked = true;
+        }
+    });
+
+    // 清空设置（全部显示）
+    menuSettings = {};
+
+    try {
+        await fetch(`${apiBase}/user-settings/menu_visibility`, {
+            method: 'PUT',
+            headers: {
+                'Authorization': `Bearer ${authToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                value: JSON.stringify({}),
+                description: '菜单显示设置'
+            })
+        });
+
+        applyMenuVisibility();
+        showToast('菜单设置已恢复默认', 'success');
+    } catch (error) {
+        console.error('重置菜单设置失败:', error);
+        showToast('重置菜单设置失败', 'danger');
+    }
+}
+
+// 应用菜单显示/隐藏
+function applyMenuVisibility() {
+    MENU_ITEMS.forEach(item => {
+        if (item.required) return; // 必选项始终显示
+
+        const isVisible = menuSettings[item.id] !== false;
+        const menuItem = document.querySelector(`.nav-item[data-menu-id="${item.id}"]`);
+        if (menuItem) {
+            menuItem.style.display = isVisible ? '' : 'none';
+        }
+    });
+}
+
+// 加载菜单设置
+async function loadMenuSettings() {
+    try {
+        const response = await fetch(`${apiBase}/user-settings`, {
+            headers: {
+                'Authorization': `Bearer ${authToken}`
+            }
+        });
+
+        if (response.ok) {
+            const settings = await response.json();
+            if (settings.menu_visibility && settings.menu_visibility.value) {
+                try {
+                    menuSettings = JSON.parse(settings.menu_visibility.value);
+                } catch (e) {
+                    menuSettings = {};
+                }
+            }
+            applyMenuVisibility();
+        }
+    } catch (error) {
+        console.error('加载菜单设置失败:', error);
+    }
 }
 
 // 主题表单提交处理

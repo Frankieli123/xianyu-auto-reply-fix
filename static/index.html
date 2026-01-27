@@ -25,73 +25,73 @@
       </a>
     </div>
     <nav class="sidebar-nav">
-      <div class="nav-item">
+      <div class="nav-item" data-menu-id="dashboard">
         <a href="#" class="nav-link active" onclick="showSection('dashboard')">
           <i class="bi bi-speedometer2"></i>
           <span>仪表盘</span>
         </a>
       </div>
-      <div class="nav-item">
+      <div class="nav-item" data-menu-id="accounts">
         <a href="#" class="nav-link" onclick="showSection('accounts')">
           <i class="bi bi-person-circle"></i>
           <span>账号管理</span>
         </a>
       </div>
-      <div class="nav-item">
+      <div class="nav-item" data-menu-id="items">
         <a href="#" class="nav-link" onclick="showSection('items')">
           <i class="bi bi-box-seam"></i>
           <span>商品管理</span>
         </a>
       </div>
-      <div class="nav-item">
+      <div class="nav-item" data-menu-id="orders">
         <a href="#" class="nav-link" onclick="showSection('orders')">
           <i class="bi bi-receipt-cutoff"></i>
           <span>订单管理</span>
         </a>
       </div>
-      <div class="nav-item">
+      <div class="nav-item" data-menu-id="auto-reply">
         <a href="#" class="nav-link" onclick="showSection('auto-reply')">
           <i class="bi bi-chat-left-text"></i>
           <span>自动回复</span>
         </a>
       </div>
-      <div class="nav-item">
+      <div class="nav-item" data-menu-id="items-reply">
         <a href="#" class="nav-link" onclick="showSection('items-reply')">
           <i class="bi bi-chat-left-text"></i>
           <span>指定商品回复</span>
         </a>
       </div>
-      <div class="nav-item">
+      <div class="nav-item" data-menu-id="cards">
         <a href="#" class="nav-link" onclick="showSection('cards')">
           <i class="bi bi-credit-card"></i>
           <span>卡券管理</span>
         </a>
       </div>
-      <div class="nav-item">
+      <div class="nav-item" data-menu-id="auto-delivery">
         <a href="#" class="nav-link" onclick="showSection('auto-delivery')">
           <i class="bi bi-truck"></i>
           <span>自动发货</span>
         </a>
       </div>
-      <div class="nav-item">
+      <div class="nav-item" data-menu-id="notification-channels">
         <a href="#" class="nav-link" onclick="showSection('notification-channels')">
           <i class="bi bi-bell"></i>
           <span>通知渠道</span>
         </a>
       </div>
-      <div class="nav-item">
+      <div class="nav-item" data-menu-id="message-notifications">
         <a href="#" class="nav-link" onclick="showSection('message-notifications')">
           <i class="bi bi-chat-dots"></i>
           <span>消息通知</span>
         </a>
       </div>
-      <div class="nav-item">
+      <div class="nav-item" data-menu-id="online-im">
         <a href="#" class="nav-link" onclick="showSection('online-im')">
           <i class="bi bi-headset"></i>
           <span>在线客服</span>
         </a>
       </div>
-      <div class="nav-item">
+      <div class="nav-item" data-menu-id="system-settings">
         <a href="#" class="nav-link" onclick="showSection('system-settings')">
           <i class="bi bi-gear"></i>
           <span>系统设置</span>
@@ -103,25 +103,25 @@
         <div class="nav-divider mt-3 mb-2">
           <small class="text-white-50">管理员功能</small>
         </div>
-        <div class="nav-item">
+        <div class="nav-item" data-menu-id="user-management">
           <a href="#" class="nav-link" onclick="showSection('user-management')">
             <i class="bi bi-people"></i>
             <span>用户管理</span>
           </a>
         </div>
-        <div class="nav-item">
+        <div class="nav-item" data-menu-id="logs">
           <a href="#" class="nav-link" onclick="showSection('logs')">
             <i class="bi bi-file-text-fill"></i>
             <span>系统日志</span>
           </a>
         </div>
-        <div class="nav-item">
+        <div class="nav-item" data-menu-id="risk-control-logs">
           <a href="#" class="nav-link" onclick="showSection('risk-control-logs')">
             <i class="bi bi-shield-exclamation"></i>
             <span>风控日志</span>
           </a>
         </div>
-        <div class="nav-item">
+        <div class="nav-item" data-menu-id="data-management">
           <a href="#" class="nav-link" onclick="showSection('data-management')">
             <i class="bi bi-database"></i>
             <span>数据管理</span>
@@ -129,7 +129,7 @@
         </div>
       </div>
 
-      <div class="nav-item">
+      <div class="nav-item" data-menu-id="about">
         <a href="#" class="nav-link" onclick="showSection('about')">
           <i class="bi bi-info-circle"></i>
           <span>关于</span>
@@ -2023,6 +2023,34 @@
           </div>
         </div>
 
+        <!-- 菜单管理 -->
+        <div class="row mt-4">
+          <div class="col-12">
+            <div class="card">
+              <div class="card-header">
+                <i class="bi bi-list me-2"></i>菜单管理
+              </div>
+              <div class="card-body">
+                <div class="alert alert-info mb-3">
+                  <i class="bi bi-info-circle me-2"></i>
+                  选择要在侧边栏显示的菜单项，取消勾选的菜单将被隐藏。仪表盘和系统设置为必选项。
+                </div>
+                <div class="row" id="menuManagementList">
+                  <!-- 动态生成菜单项开关 -->
+                </div>
+                <div class="mt-3">
+                  <button type="button" class="btn btn-primary" onclick="saveMenuSettings()">
+                    <i class="bi bi-check-circle me-1"></i>保存菜单设置
+                  </button>
+                  <button type="button" class="btn btn-outline-secondary ms-2" onclick="resetMenuSettings()">
+                    <i class="bi bi-arrow-counterclockwise me-1"></i>恢复默认
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- API安全设置 (仅管理员可见) -->
         <div id="api-security-settings" class="row mt-4" style="display: none;">
           <div class="col-md-12">
@@ -3367,7 +3395,7 @@
 
   <!-- JS依赖 -->
   <script src="/static/lib/bootstrap/bootstrap.bundle.min.js"></script>
-  <script src="/static/js/app.js?v=2.4.0"></script>
+  <script src="/static/js/app.js?v=2.4.1"></script>
 
   <!-- 默认回复管理模态框 -->
   <div class="modal fade" id="defaultReplyModal" tabindex="-1" aria-labelledby="defaultReplyModalLabel" aria-hidden="true">
