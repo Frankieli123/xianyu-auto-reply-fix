@@ -3735,16 +3735,10 @@ class XianyuLive:
     def extract_item_id_from_message(self, message):
         """从消息中提取商品ID的辅助方法"""
         try:
-            # 方法1: 从message["1"]中提取（如果是字符串格式）
-            message_1 = message.get('1')
-            if isinstance(message_1, str):
-                # 尝试从字符串中提取数字ID
-                id_match = re.search(r'(\d{10,})', message_1)
-                if id_match:
-                    logger.info(f"从message[1]字符串中提取商品ID: {id_match.group(1)}")
-                    return id_match.group(1)
+            # 注意: message["1"] 是会话ID(chat_id/cid)，格式如 "56226853668@goofish"
+            # 不能从中提取商品ID，否则会把chat_id误当作item_id
 
-            # 方法2: 从message["3"]中提取
+            # 方法1: 从message["3"]中提取
             message_3 = message.get('3', {})
             if isinstance(message_3, dict):
 
@@ -3782,7 +3776,10 @@ class XianyuLive:
                         logger.info(f"【{self.cookie_id}】从消息内容中提取商品ID: {id_match.group(1)}")
                         return id_match.group(1)
 
-            # 方法3: 遍历整个消息结构查找可能的商品ID
+            # 方法2: 遍历整个消息结构查找可能的商品ID
+            # 跳过的字段: "1" 是会话ID(chat_id/cid)，不包含商品ID
+            skip_keys = {'1'}
+
             def find_item_id_recursive(obj, path=""):
                 if isinstance(obj, dict):
                     # 直接查找itemId字段
@@ -3793,13 +3790,18 @@ class XianyuLive:
                                 logger.info(f"从{path}.{key}中提取商品ID: {value}")
                                 return value
 
-                    # 递归查找
+                    # 递归查找（跳过chat_id相关字段）
                     for key, value in obj.items():
+                        if key in skip_keys:
+                            continue
                         result = find_item_id_recursive(value, f"{path}.{key}" if path else key)
                         if result:
                             return result
 
                 elif isinstance(obj, str):
+                    # 跳过chat_id格式的字符串（如 "56226853668@goofish"）
+                    if '@goofish' in obj or '@xianyu' in obj:
+                        return None
                     # 从字符串中提取可能的商品ID
                     id_match = re.search(r'(\d{10,})', obj)
                     if id_match:

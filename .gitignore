@@ -794,3 +794,4 @@ browser_data/
 qr_screenshots/
 update_backup/
 logs/
+.ace-tool/
