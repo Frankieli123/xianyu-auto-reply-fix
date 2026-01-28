@@ -5,22 +5,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>闲鱼自动回复管理系统</title>
   <link rel="icon" type="image/png" href="/static/favicon.png">
-  <!-- 在渲染前立即设置主题和关键样式，避免闪烁 -->
+  <!-- 防止主题闪烁：先隐藏页面，设置好主题后再显示 -->
+  <style>
+    html { visibility: hidden; }
+    html.theme-ready { visibility: visible; }
+  </style>
   <script>
     (function() {
       var savedMode = localStorage.getItem('darkMode');
       if (savedMode === 'dark') {
         document.documentElement.setAttribute('data-theme', 'dark');
       }
+      // 主题设置完成，显示页面
+      document.documentElement.classList.add('theme-ready');
     })();
   </script>
-  <!-- 暗色模式关键内联样式，在外部CSS加载前生效 -->
-  <style>
-    [data-theme="dark"] { background-color: #0f172a; color: #f1f5f9; }
-    [data-theme="dark"] body { background-color: #0f172a; }
-    [data-theme="dark"] .sidebar { background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%); }
-    [data-theme="dark"] .main-content { background: #0f172a; }
-  </style>
   <link rel="stylesheet" href="/static/lib/bootstrap/bootstrap.min.css">
   <link rel="stylesheet" href="/static/lib/bootstrap-icons/bootstrap-icons.css">
 
