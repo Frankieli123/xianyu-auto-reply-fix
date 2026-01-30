@@ -8458,7 +8458,7 @@ class XianyuLive:
                                         reminder_title = message_10.get("reminderTitle", "")
                                         if reminder_title:
                                             # 系统提示文本关键词列表（这些不是买家昵称）
-                                            system_keywords = ['待付款', '待发货', '已付款', '发货', '收货', '退款', '交易', '拍下', '付款', '确认', '成功', '关闭']
+                                            system_keywords = ['待付款', '待发货', '已付款', '发货', '收货', '退款', '交易', '拍下', '付款', '确认', '成功', '关闭', '评价', '完成']
                                             is_system_text = any(keyword in reminder_title for keyword in system_keywords)
                                             if not is_system_text:
                                                 temp_buyer_nick = reminder_title
@@ -9012,7 +9012,7 @@ class XianyuLive:
             # 需要过滤掉系统提示文本，避免将"买家已拍下，待付款"等写入昵称
             if send_user_id and send_user_name:
                 # 检查是否为系统提示文本
-                system_keywords = ['待付款', '待发货', '已付款', '发货', '收货', '退款', '交易', '拍下', '付款', '确认', '成功', '关闭']
+                system_keywords = ['待付款', '待发货', '已付款', '发货', '收货', '退款', '交易', '拍下', '付款', '确认', '成功', '关闭', '评价', '完成', '给ta']
                 is_system_text = any(keyword in send_user_name for keyword in system_keywords)
                 if not is_system_text:
                     try:
