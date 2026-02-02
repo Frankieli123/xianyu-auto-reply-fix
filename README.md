@@ -1,14 +1,15 @@
 # 🐟 闲鱼自动回复系统
 
+
 [![GitHub](https://img.shields.io/badge/GitHub-GuDong2003%2Fxianyu--auto--reply--fix-blue?logo=github)](https://github.com/GuDong2003/xianyu-auto-reply-fix)
 [![Docker](https://img.shields.io/badge/Docker-暂不可用-blue?logo=docker)](https://github.com/zhinianboke/xianyu-auto-reply#-快速开始)
 [![Python](https://img.shields.io/badge/Python-3.11+-green?logo=python)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-仅供学习-red.svg)](#️-版权声明与使用条款)
 
-## 最新代码获取地址（尽量转存）
+## 原始项目
 
-~~我用夸克网盘分享了「自动发货」，点击链接即可保存。打开「夸克APP」，无需下载在线播放视频，畅享原画5倍速，支持电视投屏。
-链接：https://pan.quark.cn/s/447e909f4107~~
+https://github.com/zhinianboke-new/xianyu-auto-reply
+本项目基于以上项目老马二开的版本
 
 ## 📋 项目概述
 
@@ -162,6 +163,8 @@ xianyu-auto-reply/
 │       │   └── bootstrap-icons/   # Bootstrap图标
 │       ├── uploads/
 │       │   └── images/            # 上传的图片文件
+│       ├── userscripts/           # 油猴用户脚本
+│       │   └── goofish-dark-mode.user.js # 闲鱼聊天暗色模式脚本
 │       ├── xianyu_js_version_2.js # 闲鱼JavaScript工具库
 │       ├── wechat-group.png       # 微信群二维码
 │       └── qq-group.png           # QQ群二维码
@@ -472,6 +475,20 @@ CPU_LIMIT=2.0                          # CPU限制(核心数)
 - 商品按"人想要"数量自动排序
 - 支持查看商品详情和跳转到闲鱼页面
 
+### 6. 安装闲鱼聊天暗色模式脚本（可选）
+本项目提供了一个油猴用户脚本，可为闲鱼官网聊天页面添加暗色模式支持。
+
+**安装步骤**：
+1. 安装油猴扩展（Tampermonkey）到您的浏览器
+2. 访问 `static/userscripts/goofish-dark-mode.user.js` 获取脚本
+3. 在油猴扩展中创建新脚本，粘贴脚本内容并保存
+4. 访问闲鱼聊天页面（goofish.com/im*）即可生效
+
+**功能特性**：
+- 支持三种模式：开启 / 关闭 / 跟随系统
+- 通过油猴菜单快速切换暗色模式状态
+- 参考 macOS/Discord 风格的简洁配色方案
+
 ## 🏗️ 系统架构
 
 ```
@@ -552,6 +569,13 @@ CPU_LIMIT=2.0                          # CPU限制(核心数)
 - **移动端适配** - 完美适配手机和平板设备，随时随地管理
 - **实时更新** - 界面数据实时更新，无需手动刷新
 
+### 🌙 闲鱼聊天暗色模式（油猴脚本）
+- **独立脚本** - 提供油猴用户脚本，为闲鱼官网聊天页面添加暗色模式
+- **三种模式** - 支持开启/关闭/跟随系统三种状态切换
+- **macOS风格** - 参考 macOS/Discord 风格的简洁暗色配色
+- **全面覆盖** - 覆盖会话列表、聊天区域、消息气泡、输入框等组件
+- **便捷切换** - 通过油猴菜单一键切换暗色模式状态
+
 ## 📁 核心文件功能说明
 
 ### 🚀 核心启动模块
@@ -589,6 +613,7 @@ CPU_LIMIT=2.0                          # CPU限制(核心数)
 - **`register.html`** - 用户注册页面，支持邮箱验证码、实时验证、密码强度检测
 - **`js/app.js`** - 主要JavaScript逻辑，包含所有功能模块：前端交互、API调用、实时更新、数据管理、用户界面控制
 - **`css/`** - 模块化样式文件，包含布局、组件、主题等分类样式，响应式设计，支持明暗主题切换
+- **`userscripts/goofish-dark-mode.user.js`** - 闲鱼聊天暗色模式油猴脚本，为闲鱼官网聊天页面（goofish.com/im*）添加暗色模式支持，支持跟随系统/手动切换
 - **`xianyu_js_version_2.js`** - 闲鱼JavaScript工具库，加密解密、数据处理、API封装
 - **`lib/`** - 前端依赖库，包含Bootstrap 5、Bootstrap Icons等第三方库
 - **`uploads/images/`** - 图片上传目录，支持发货图片和其他媒体文件存储
