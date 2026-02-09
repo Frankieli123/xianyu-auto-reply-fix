@@ -13437,7 +13437,7 @@ function exportSearchResults() {
 
 
 // 默认版本号（当无法读取 version.txt 时使用）
-const DEFAULT_VERSION = 'v1.2.3';
+const DEFAULT_VERSION = 'v1.2.4';
 
 // 当前本地版本号（动态从 version.txt 读取）
 let LOCAL_VERSION = DEFAULT_VERSION;
@@ -13450,9 +13450,20 @@ let remoteVersionInfo = null;
 
 // 本地版本历史（远程服务禁用时使用）
 const LOCAL_VERSION_HISTORY = {
-    version: 'v1.2.3',
+    version: 'v1.2.4',
     intro: '本系统仅供个人学习研究使用，请勿用于商业用途。如有问题或建议，欢迎反馈。',
     versionHistory: [
+        {
+            version: 'v1.2.4',
+            date: '2026-02-08',
+            updates: [
+                '【新功能】优化验证类型检测，精确区分人脸/短信/二维码/账密错误',
+                '【新功能】新增 {verification_type} 模板变量',
+                '【新功能】风控日志支持多种事件类型',
+                '【修复】修复密码登录时 db_manager 变量作用域问题',
+                '【修复】移除通知中的【闲鱼通知】前缀'
+            ]
+        },
         {
             version: 'v1.2.3',
             date: '2026-02-08',
@@ -13923,6 +13934,17 @@ function showChangelogModal() {
 
     // 更新日志数据
     const changelog = [
+        {
+            version: 'v1.2.4',
+            date: '2026-02-08',
+            changes: [
+                { type: 'feature', text: '优化验证类型检测，精确区分人脸/短信/二维码/账密错误' },
+                { type: 'feature', text: '新增 {verification_type} 模板变量' },
+                { type: 'feature', text: '风控日志支持多种事件类型' },
+                { type: 'fix', text: '修复密码登录时 db_manager 变量作用域问题' },
+                { type: 'fix', text: '移除通知中的【闲鱼通知】前缀' }
+            ]
+        },
         {
             version: 'v1.2.3',
             date: '2026-02-08',
