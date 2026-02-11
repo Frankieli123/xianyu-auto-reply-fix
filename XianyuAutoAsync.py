@@ -2205,17 +2205,13 @@ class XianyuLive:
                         log_id = None
                         try:
                             from db_manager import db_manager
-                            success = db_manager.add_risk_control_log(
+                            log_id = db_manager.add_risk_control_log(
                                 cookie_id=self.cookie_id,
                                 event_type='slider_captcha',
                                 event_description=f"检测到需要滑块验证，触发场景: Token刷新, URL: {verification_url}",
                                 processing_status='processing'
                             )
-                            if success:
-                                # 获取刚插入的记录ID（简单方式，实际应该返回ID）
-                                logs = db_manager.get_risk_control_logs(cookie_id=self.cookie_id, limit=1)
-                                if logs:
-                                    log_id = logs[0].get('id')
+                            if log_id:
                                 logger.info(f"【{self.cookie_id}】风控日志记录成功，ID: {log_id}")
                         except Exception as log_e:
                             logger.error(f"【{self.cookie_id}】记录风控日志失败: {log_e}")

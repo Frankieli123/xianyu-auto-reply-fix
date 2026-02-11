@@ -6449,7 +6449,7 @@ Cookie数量: {cookie_count}
 
     def add_risk_control_log(self, cookie_id: str, event_type: str = 'slider_captcha',
                            event_description: str = None, processing_result: str = None,
-                           processing_status: str = 'processing', error_message: str = None) -> bool:
+                           processing_status: str = 'processing', error_message: str = None):
         """
         添加风控日志记录
 
@@ -6462,7 +6462,7 @@ Cookie数量: {cookie_count}
             error_message: 错误信息
 
         Returns:
-            bool: 添加成功返回True，失败返回False
+            int or None: 添加成功返回日志ID，失败返回None
         """
         try:
             with self.lock:
@@ -6473,10 +6473,10 @@ Cookie数量: {cookie_count}
                     VALUES (?, ?, ?, ?, ?, ?)
                 ''', (cookie_id, event_type, event_description, processing_result, processing_status, error_message))
                 self.conn.commit()
-                return True
+                return cursor.lastrowid
         except Exception as e:
             logger.error(f"添加风控日志失败: {e}")
-            return False
+            return None
 
     def update_risk_control_log(self, log_id: int, processing_result: str = None,
                               processing_status: str = None, error_message: str = None) -> bool:

@@ -2071,6 +2071,24 @@ def update_cookie_proxy_config(cid: str, config: ProxyConfig, current_user: Dict
 
 # ========================= 账号密码登录相关接口 =========================
 
+def _update_session_risk_log(session_id: str, status: str, processing_result: str = None, error_message: str = None):
+    """更新登录会话关联的风控日志状态"""
+    try:
+        session = password_login_sessions.get(session_id)
+        if not session:
+            return
+        log_id = session.get('risk_control_log_id')
+        if not log_id:
+            return
+        db_manager.update_risk_control_log(
+            log_id=log_id,
+            processing_status=status,
+            processing_result=processing_result,
+            error_message=error_message
+        )
+    except Exception as e:
+        logger.error(f"更新风控日志状态失败: {e}")
+
 async def _execute_password_login(session_id: str, account_id: str, account: str, password: str, show_browser: bool, user_id: int, current_user: Dict[str, Any]):
     """后台执行账号密码登录任务"""
     try:
@@ -2251,6 +2269,8 @@ async def _execute_password_login(session_id: str, account_id: str, account: str
                     password_login_sessions[session_id]['status'] = 'failed'
                     password_login_sessions[session_id]['error'] = '登录失败，请检查账号密码是否正确'
                     log_with_user('error', f"账号密码登录失败: {account_id}", current_user)
+                    # 更新风控日志状态
+                    _update_session_risk_log(session_id, 'failed', error_message='登录失败，账号密码可能错误')
                     return
                 
                 # 将cookie字典转换为字符串格式
@@ -2389,6 +2409,8 @@ async def _execute_password_login(session_id: str, account_id: str, account: str
                 password_login_sessions[session_id]['account_id'] = account_id
                 password_login_sessions[session_id]['is_new_account'] = is_new_account
                 password_login_sessions[session_id]['cookie_count'] = len(cookies_dict)
+                # 更新风控日志状态
+                _update_session_risk_log(session_id, 'success', processing_result='Cookie刷新成功')
 
                 # 发送登录成功通知（使用模板系统）
                 try:
@@ -2440,6 +2462,8 @@ Cookie数量: {cookie_count}
                 password_login_sessions[session_id]['error'] = error_msg
                 log_with_user('error', f"账号密码登录失败: {account_id}, 错误: {error_msg}", current_user)
                 logger.info(f"会话 {session_id} 状态已更新为 failed，错误消息: {error_msg}")  # 添加日志确认状态更新
+                # 更新风控日志状态
+                _update_session_risk_log(session_id, 'failed', error_message=error_msg[:200])
                 import traceback
                 logger.error(traceback.format_exc())
             finally:
@@ -2459,6 +2483,7 @@ Cookie数量: {cookie_count}
         password_login_sessions[session_id]['status'] = 'failed'
         password_login_sessions[session_id]['error'] = str(e)
         log_with_user('error', f"执行账号密码登录任务异常: {str(e)}", current_user)
+        _update_session_risk_log(session_id, 'failed', error_message=str(e)[:200])
         import traceback
         logger.error(traceback.format_exc())
 
@@ -2477,6 +2502,7 @@ async def password_login(
         show_browser_specified = 'show_browser' in request
         show_browser = request.get('show_browser', False)
         refresh_mode = request.get('refresh_mode', False)  # 刷新模式：从数据库读取账密
+        risk_log_id = None
 
         user_id = current_user['user_id']
 
@@ -2502,6 +2528,18 @@ async def password_login(
 
             log_with_user('info', f"刷新Cookie模式: {account_id}, 用户名: {account}, show_browser: {show_browser}", current_user)
 
+            # 记录手动刷新Cookie到风控日志
+            try:
+                risk_log_id = db_manager.add_risk_control_log(
+                    cookie_id=account_id,
+                    event_type='cookie_refresh',
+                    event_description=f"手动触发Cookie刷新（账密登录方式）",
+                    processing_status='processing'
+                )
+            except Exception as log_e:
+                risk_log_id = None
+                logger.error(f"记录风控日志失败: {log_e}")
+
         if not account_id or not account or not password:
             return {'success': False, 'message': '账号ID、登录账号和密码不能为空'}
 
@@ -2520,6 +2558,7 @@ async def password_login(
             'password': password,
             'show_browser': show_browser,
             'refresh_mode': refresh_mode,  # 保存刷新模式标志
+            'risk_control_log_id': risk_log_id if refresh_mode else None,  # 风控日志ID
             'status': 'processing',
             'verification_url': None,
             'screenshot_path': None,
@@ -3018,6 +3057,18 @@ async def refresh_cookies_from_qr_login(
 
         log_with_user('info', f"开始使用扫码cookie刷新真实cookie: {cookie_id}", current_user)
 
+        # 记录扫码刷新Cookie到风控日志
+        risk_log_id = None
+        try:
+            risk_log_id = db_manager.add_risk_control_log(
+                cookie_id=cookie_id,
+                event_type='cookie_refresh',
+                event_description=f"手动触发Cookie刷新（扫码登录方式）",
+                processing_status='processing'
+            )
+        except Exception as log_e:
+            logger.error(f"记录风控日志失败: {log_e}")
+
         # 创建一个临时的XianyuLive实例来执行cookie刷新
         from XianyuAutoAsync import XianyuLive
 
@@ -3038,6 +3089,13 @@ async def refresh_cookies_from_qr_login(
         if success:
             log_with_user('info', f"扫码cookie刷新成功: {cookie_id}", current_user)
 
+            # 更新风控日志状态
+            if risk_log_id:
+                try:
+                    db_manager.update_risk_control_log(log_id=risk_log_id, processing_status='success', processing_result='扫码Cookie刷新成功')
+                except Exception:
+                    pass
+
             # 如果cookie_manager存在，更新其中的cookie
             if cookie_manager.manager:
                 # 从数据库获取更新后的cookie
@@ -3054,10 +3112,22 @@ async def refresh_cookies_from_qr_login(
             }
         else:
             log_with_user('error', f"扫码cookie刷新失败: {cookie_id}", current_user)
+            # 更新风控日志状态
+            if risk_log_id:
+                try:
+                    db_manager.update_risk_control_log(log_id=risk_log_id, processing_status='failed', error_message='获取真实cookie失败')
+                except Exception:
+                    pass
             return {'success': False, 'message': '获取真实cookie失败'}
 
     except Exception as e:
         log_with_user('error', f"扫码cookie刷新异常: {str(e)}", current_user)
+        # 更新风控日志状态
+        if risk_log_id:
+            try:
+                db_manager.update_risk_control_log(log_id=risk_log_id, processing_status='failed', error_message=str(e)[:200])
+            except Exception:
+                pass
         return {'success': False, 'message': f'刷新cookie失败: {str(e)}'}
 
 
