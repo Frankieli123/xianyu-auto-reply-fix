@@ -3583,13 +3583,19 @@ async def test_notification_template(data: TestNotificationIn, current_user: Dic
     import time as time_module
     import aiohttp
     from db_manager import db_manager
+    import json
+
+    def _looks_like_wecom_webhook(url: str) -> bool:
+        if not isinstance(url, str):
+            return False
+        return 'qyapi.weixin.qq.com/cgi-bin/webhook/send' in url.lower()
 
     try:
         if data.template_type not in ['message', 'token_refresh', 'delivery', 'slider_success', 'face_verify', 'password_login_success', 'cookie_refresh_success']:
             raise HTTPException(status_code=400, detail='无效的模板类型')
 
-        # 获取所有已启用的通知渠道
-        channels = db_manager.get_notification_channels()
+        # 获取当前用户已启用的通知渠道
+        channels = db_manager.get_notification_channels(current_user.get('user_id'))
         logger.info(f"获取到的通知渠道: {channels}")
         enabled_channels = [c for c in channels if c.get('enabled', False)]
         logger.info(f"已启用的通知渠道: {enabled_channels}")
@@ -3653,6 +3659,7 @@ async def test_notification_template(data: TestNotificationIn, current_user: Dic
         # 发送测试通知到所有已启用的渠道
         success_channels = []
         failed_channels = []
+        sent_destinations = set()
 
         for channel in enabled_channels:
             channel_type = channel.get('type', '')
@@ -3661,9 +3668,38 @@ async def test_notification_template(data: TestNotificationIn, current_user: Dic
             logger.info(f"处理通知渠道: name={channel_name}, type={channel_type}, config={config_str}")
 
             try:
-                import json
                 config_data = json.loads(config_str) if isinstance(config_str, str) else config_str
                 logger.info(f"解析后的配置: {config_data}")
+
+                # 同一目的地去重（避免同一群机器人/同一webhook重复收到两条一样的消息）
+                destination_key = None
+                if channel_type in ('feishu', 'lark'):
+                    webhook_url = str(config_data.get('webhook_url', '')).strip()
+                    destination_key = ('feishu', webhook_url) if webhook_url else None
+                elif channel_type in ('dingtalk', 'ding_talk'):
+                    webhook_url = str(config_data.get('webhook_url', '')).strip()
+                    destination_key = ('dingtalk', webhook_url) if webhook_url else None
+                elif channel_type == 'wechat':
+                    webhook_url = str(config_data.get('webhook_url', '')).strip()
+                    destination_key = ('wechat', webhook_url) if webhook_url else None
+                elif channel_type == 'webhook':
+                    webhook_url = str(config_data.get('webhook_url', '')).strip()
+                    if webhook_url:
+                        destination_key = ('wechat', webhook_url) if _looks_like_wecom_webhook(webhook_url) else ('webhook', webhook_url)
+                elif channel_type == 'bark':
+                    server_url = str(config_data.get('server_url') or 'https://api.day.app').strip()
+                    device_key = str(config_data.get('device_key', '')).strip()
+                    destination_key = ('bark', server_url, device_key) if device_key else None
+                elif channel_type == 'telegram':
+                    bot_token = str(config_data.get('bot_token', '')).strip()
+                    chat_id = str(config_data.get('chat_id', '')).strip()
+                    destination_key = ('telegram', bot_token, chat_id) if bot_token and chat_id else None
+
+                if destination_key:
+                    if destination_key in sent_destinations:
+                        logger.debug(f"测试通知目的地重复，跳过发送: {destination_key}")
+                        continue
+                    sent_destinations.add(destination_key)
 
                 # 根据渠道类型发送通知
                 if channel_type == 'feishu' or channel_type == 'lark':
@@ -3736,9 +3772,50 @@ async def test_notification_template(data: TestNotificationIn, current_user: Dic
                                 resp_text = await resp.text()
                                 logger.info(f"钉钉响应: status={resp.status}, body={resp_text}")
                                 if resp.status == 200:
-                                    success_channels.append(channel_name)
+                                    try:
+                                        resp_json = json.loads(resp_text) if resp_text else {}
+                                        if resp_json.get('errcode', 0) == 0:
+                                            success_channels.append(channel_name)
+                                        else:
+                                            failed_channels.append(
+                                                f"{channel_name} (errcode {resp_json.get('errcode')}: {resp_json.get('errmsg', resp_text[:50])})"
+                                            )
+                                    except Exception:
+                                        success_channels.append(channel_name)
                                 else:
-                                    failed_channels.append(f"{channel_name} (HTTP {resp.status})")
+                                    failed_channels.append(f"{channel_name} (HTTP {resp.status}: {resp_text[:50]})")
+                    else:
+                        failed_channels.append(f"{channel_name} (未配置webhook_url)")
+
+                elif channel_type == 'wechat':
+                    webhook_url = config_data.get('webhook_url', '')
+                    if webhook_url:
+                        payload = {
+                            "msgtype": "text",
+                            "text": {
+                                "content": f"【测试通知】\n\n{template}"
+                            }
+                        }
+                        timeout = aiohttp.ClientTimeout(total=10)
+                        async with aiohttp.ClientSession(timeout=timeout) as session:
+                            async with session.post(webhook_url, json=payload) as resp:
+                                resp_text = await resp.text()
+                                logger.info(f"企微响应: status={resp.status}, body={resp_text[:500]}")
+                                if resp.status == 200:
+                                    try:
+                                        resp_json = json.loads(resp_text) if resp_text else {}
+                                        if resp_json.get('errcode', 0) == 0:
+                                            success_channels.append(channel_name)
+                                        else:
+                                            failed_channels.append(
+                                                f"{channel_name} (errcode {resp_json.get('errcode')}: {resp_json.get('errmsg', resp_text[:50])})"
+                                            )
+                                    except Exception:
+                                        success_channels.append(channel_name)
+                                else:
+                                    failed_channels.append(f"{channel_name} (HTTP {resp.status}: {resp_text[:50]})")
+                    else:
+                        failed_channels.append(f"{channel_name} (未配置webhook_url)")
 
                 elif channel_type == 'bark':
                     server_url = config_data.get('server_url', 'https://api.day.app')
@@ -3775,18 +3852,45 @@ async def test_notification_template(data: TestNotificationIn, current_user: Dic
                 elif channel_type == 'webhook':
                     webhook_url = config_data.get('webhook_url', '')
                     if webhook_url:
-                        payload = {
-                            "title": "测试通知",
-                            "content": template,
-                            "type": data.template_type
-                        }
+                        http_method = str(config_data.get('http_method', 'POST')).upper()
+                        if http_method not in ('POST', 'PUT'):
+                            http_method = 'POST'
+
+                        if _looks_like_wecom_webhook(webhook_url):
+                            payload = {
+                                "msgtype": "text",
+                                "text": {
+                                    "content": f"【测试通知】\n\n{template}"
+                                }
+                            }
+                        else:
+                            payload = {
+                                "title": "测试通知",
+                                "content": template,
+                                "type": data.template_type
+                            }
                         timeout = aiohttp.ClientTimeout(total=10)
                         async with aiohttp.ClientSession(timeout=timeout) as session:
-                            async with session.post(webhook_url, json=payload) as resp:
-                                if resp.status == 200:
+                            async with session.request(http_method, webhook_url, json=payload) as resp:
+                                resp_text = await resp.text()
+                                logger.info(f"Webhook响应: status={resp.status}, body={resp_text[:500]}")
+                                if resp.status == 200 and _looks_like_wecom_webhook(webhook_url):
+                                    try:
+                                        resp_json = json.loads(resp_text) if resp_text else {}
+                                        if resp_json.get('errcode', 0) == 0:
+                                            success_channels.append(channel_name)
+                                        else:
+                                            failed_channels.append(
+                                                f"{channel_name} (errcode {resp_json.get('errcode')}: {resp_json.get('errmsg', resp_text[:50])})"
+                                            )
+                                    except Exception:
+                                        failed_channels.append(f"{channel_name} (响应解析失败: {resp_text[:50]})")
+                                elif 200 <= resp.status < 300:
                                     success_channels.append(channel_name)
                                 else:
-                                    failed_channels.append(f"{channel_name} (HTTP {resp.status})")
+                                    failed_channels.append(f"{channel_name} (HTTP {resp.status}: {resp_text[:50]})")
+                    else:
+                        failed_channels.append(f"{channel_name} (未配置webhook_url)")
 
                 elif channel_type == 'email':
                     failed_channels.append(f"{channel_name} (邮件测试暂不支持)")

@@ -1511,34 +1511,34 @@ class XianyuLive:
             order_id = None
 
             # 先查看消息的完整结构
-            logger.warning(f"【{self.cookie_id}】🔍 完整消息结构: {message}")
+            logger.debug(f"【{self.cookie_id}】🔍 完整消息结构: {str(message)[:500]}")
 
             # 检查message['1']的结构，处理可能是列表、字典或字符串的情况
             message_1 = message.get('1', {})
             content_json_str = ''
 
             if isinstance(message_1, dict):
-                logger.warning(f"【{self.cookie_id}】🔍 message['1'] 是字典，keys: {list(message_1.keys())}")
+                logger.debug(f"【{self.cookie_id}】🔍 message['1'] 是字典，keys: {list(message_1.keys())}")
 
                 # 检查message['1']['6']的结构
                 message_1_6 = message_1.get('6', {})
                 if isinstance(message_1_6, dict):
-                    logger.warning(f"【{self.cookie_id}】🔍 message['1']['6'] 是字典，keys: {list(message_1_6.keys())}")
+                    logger.debug(f"【{self.cookie_id}】🔍 message['1']['6'] 是字典，keys: {list(message_1_6.keys())}")
                     # 方法1: 从button的targetUrl中提取orderId
                     content_json_str = message_1_6.get('3', {}).get('5', '') if isinstance(message_1_6.get('3', {}), dict) else ''
                 else:
-                    logger.warning(f"【{self.cookie_id}】🔍 message['1']['6'] 不是字典: {type(message_1_6)}")
+                    logger.debug(f"【{self.cookie_id}】🔍 message['1']['6'] 不是字典: {type(message_1_6)}")
 
             elif isinstance(message_1, list):
-                logger.warning(f"【{self.cookie_id}】🔍 message['1'] 是列表，长度: {len(message_1)}")
+                logger.debug(f"【{self.cookie_id}】🔍 message['1'] 是列表，长度: {len(message_1)}")
                 # 如果message['1']是列表，跳过这种提取方式
 
             elif isinstance(message_1, str):
-                logger.warning(f"【{self.cookie_id}】🔍 message['1'] 是字符串，长度: {len(message_1)}")
+                logger.debug(f"【{self.cookie_id}】🔍 message['1'] 是字符串，长度: {len(message_1)}")
                 # 如果message['1']是字符串，跳过这种提取方式
 
             else:
-                logger.warning(f"【{self.cookie_id}】🔍 message['1'] 未知类型: {type(message_1)}")
+                logger.debug(f"【{self.cookie_id}】🔍 message['1'] 未知类型: {type(message_1)}")
                 # 其他类型，跳过这种提取方式
 
             if content_json_str:
@@ -1676,7 +1676,7 @@ class XianyuLive:
             if order_id:
                 logger.info(f'【{self.cookie_id}】🎯 最终提取到订单ID: {order_id}')
             else:
-                logger.warning(f'【{self.cookie_id}】❌ 未能从消息中提取到订单ID')
+                logger.debug(f'【{self.cookie_id}】❌ 未能从消息中提取到订单ID')
 
             return order_id
 
@@ -4358,6 +4358,7 @@ Cookie数量: {cookie_count}
             )
 
             # 发送通知到各个渠道
+            sent_destinations = set()
             for i, notification in enumerate(notifications, 1):
                 logger.info(f"📱 处理第 {i} 个通知渠道: {notification.get('channel_name', 'Unknown')}")
 
@@ -4374,6 +4375,13 @@ Cookie数量: {cookie_count}
                     # 解析配置数据
                     config_data = self._parse_notification_config(channel_config)
                     logger.info(f"📱 解析后的配置数据: {config_data}")
+
+                    destination_key = self._get_notification_destination_key(channel_type, config_data)
+                    if destination_key:
+                        if destination_key in sent_destinations:
+                            logger.debug(f"📱 通知目的地重复，跳过发送: {destination_key}")
+                            continue
+                        sent_destinations.add(destination_key)
 
                     match channel_type:
                         case 'qq':
@@ -4422,6 +4430,55 @@ Cookie数量: {cookie_count}
         except (json.JSONDecodeError, TypeError):
             # 兼容旧格式（直接字符串）
             return {"config": config}
+
+    def _get_notification_destination_key(self, channel_type: str, config_data: dict):
+        """提取通知“目的地键”用于去重，避免同一目的地重复推送"""
+        try:
+            channel_type = str(channel_type or '').strip()
+            if not isinstance(config_data, dict):
+                return None
+
+            if channel_type == 'wechat':
+                webhook_url = str(config_data.get('webhook_url', '')).strip()
+                return ('wechat', webhook_url) if webhook_url else None
+
+            if channel_type == 'webhook':
+                webhook_url = str(config_data.get('webhook_url') or config_data.get('url') or '').strip()
+                if not webhook_url:
+                    return None
+                if 'qyapi.weixin.qq.com/cgi-bin/webhook/send' in webhook_url.lower():
+                    return ('wechat', webhook_url)
+                return ('webhook', webhook_url)
+
+            if channel_type in ('dingtalk', 'ding_talk'):
+                webhook_url = str(config_data.get('webhook_url', '')).strip()
+                return ('dingtalk', webhook_url) if webhook_url else None
+
+            if channel_type in ('feishu', 'lark'):
+                webhook_url = str(config_data.get('webhook_url', '')).strip()
+                return ('feishu', webhook_url) if webhook_url else None
+
+            if channel_type == 'telegram':
+                bot_token = str(config_data.get('bot_token', '')).strip()
+                chat_id = str(config_data.get('chat_id', '')).strip()
+                return ('telegram', bot_token, chat_id) if bot_token and chat_id else None
+
+            if channel_type == 'bark':
+                server_url = str(config_data.get('server_url') or 'https://api.day.app').strip()
+                device_key = str(config_data.get('device_key', '')).strip()
+                return ('bark', server_url, device_key) if device_key else None
+
+            if channel_type == 'qq':
+                qq_number = str(config_data.get('qq_number') or config_data.get('config') or '').strip()
+                return ('qq', qq_number) if qq_number else None
+
+            if channel_type == 'email':
+                recipient_email = str(config_data.get('recipient_email', '')).strip()
+                return ('email', recipient_email) if recipient_email else None
+
+            return None
+        except Exception:
+            return None
 
     async def _send_qq_notification(self, config_data: dict, message: str):
         """发送QQ通知"""
@@ -4810,6 +4867,11 @@ Cookie数量: {cookie_count}
             import aiohttp
             import json
 
+            def _looks_like_wecom_webhook(url: str) -> bool:
+                if not isinstance(url, str):
+                    return False
+                return 'qyapi.weixin.qq.com/cgi-bin/webhook/send' in url.lower()
+
             # 解析配置
             webhook_url = config_data.get('webhook_url', '')
             http_method = config_data.get('http_method', 'POST').upper()
@@ -4817,6 +4879,10 @@ Cookie数量: {cookie_count}
 
             if not webhook_url:
                 logger.warning("Webhook通知配置为空")
+                return
+
+            if _looks_like_wecom_webhook(webhook_url):
+                await self._send_wechat_notification({'webhook_url': webhook_url}, message)
                 return
 
             # 解析自定义请求头
@@ -4839,16 +4905,18 @@ Cookie数量: {cookie_count}
             async with aiohttp.ClientSession() as session:
                 if http_method == 'POST':
                     async with session.post(webhook_url, json=data, headers=headers, timeout=10) as response:
-                        if response.status == 200:
-                            logger.info(f"Webhook通知发送成功")
+                        resp_text = await response.text()
+                        if 200 <= response.status < 300:
+                            logger.info("Webhook通知发送成功")
                         else:
-                            logger.warning(f"Webhook通知发送失败: {response.status}")
+                            logger.warning(f"Webhook通知发送失败: HTTP {response.status}, body={resp_text[:500]}")
                 elif http_method == 'PUT':
                     async with session.put(webhook_url, json=data, headers=headers, timeout=10) as response:
-                        if response.status == 200:
-                            logger.info(f"Webhook通知发送成功")
+                        resp_text = await response.text()
+                        if 200 <= response.status < 300:
+                            logger.info("Webhook通知发送成功")
                         else:
-                            logger.warning(f"Webhook通知发送失败: {response.status}")
+                            logger.warning(f"Webhook通知发送失败: HTTP {response.status}, body={resp_text[:500]}")
                 else:
                     logger.warning(f"不支持的HTTP方法: {http_method}")
 
@@ -4877,10 +4945,25 @@ Cookie数量: {cookie_count}
 
             async with aiohttp.ClientSession() as session:
                 async with session.post(webhook_url, json=data, timeout=10) as response:
-                    if response.status == 200:
-                        logger.info(f"微信通知发送成功")
+                    resp_text = await response.text()
+                    if response.status != 200:
+                        logger.warning(f"微信通知发送失败: HTTP {response.status}, body={resp_text[:500]}")
+                        return
+
+                    try:
+                        resp_json = json.loads(resp_text) if resp_text else {}
+                    except json.JSONDecodeError:
+                        resp_json = {}
+
+                    if isinstance(resp_json, dict) and 'errcode' in resp_json:
+                        if resp_json.get('errcode', 0) == 0:
+                            logger.info("微信通知发送成功")
+                        else:
+                            logger.warning(
+                                f"微信通知发送失败: errcode={resp_json.get('errcode')}, errmsg={resp_json.get('errmsg', resp_text[:200])}"
+                            )
                     else:
-                        logger.warning(f"微信通知发送失败: {response.status}")
+                        logger.info("微信通知发送成功")
 
         except Exception as e:
             logger.error(f"发送微信通知异常: {self._safe_str(e)}")
@@ -5043,6 +5126,7 @@ Cookie数量: {cookie_count}
 
             # 发送通知到各个渠道
             notification_sent = False
+            sent_destinations = set()
             for notification in notifications:
                 if not notification.get('enabled', True):
                     continue
@@ -5053,6 +5137,13 @@ Cookie数量: {cookie_count}
                 try:
                     # 解析配置数据
                     config_data = self._parse_notification_config(channel_config)
+
+                    destination_key = self._get_notification_destination_key(channel_type, config_data)
+                    if destination_key:
+                        if destination_key in sent_destinations:
+                            logger.debug(f"通知目的地重复，跳过发送: {destination_key}")
+                            continue
+                        sent_destinations.add(destination_key)
 
                     match channel_type:
                         case 'qq':
@@ -5202,6 +5293,7 @@ Cookie数量: {cookie_count}
             )
 
             # 发送通知到所有已启用的通知渠道
+            sent_destinations = set()
             for notification in notifications:
                 if notification.get('enabled', False):
                     channel_type = notification.get('channel_type', 'qq')
@@ -5210,6 +5302,13 @@ Cookie数量: {cookie_count}
                     try:
                         # 解析配置数据
                         config_data = self._parse_notification_config(channel_config)
+
+                        destination_key = self._get_notification_destination_key(channel_type, config_data)
+                        if destination_key:
+                            if destination_key in sent_destinations:
+                                logger.debug(f"自动发货通知目的地重复，跳过发送: {destination_key}")
+                                continue
+                            sent_destinations.add(destination_key)
 
                         match channel_type:
                             case 'qq':
@@ -8580,7 +8679,16 @@ Cookie数量: {cookie_count}
 
             # 【消息接收标识】记录收到消息的时间，用于控制Cookie刷新
             self.last_message_received_time = time.time()
-            logger.warning(f"【{self.cookie_id}】[{msg_id}] ✅ 开始处理消息")
+            logger.info(f"【{self.cookie_id}】[{msg_id}] ✅ 开始处理消息")
+
+            # 先识别并跳过“非聊天事件消息”（常见结构：message['1'] 为 list）
+            # 这类消息通常不包含订单/商品/聊天内容，继续解析只会造成无意义告警刷屏
+            message_1 = message.get("1")
+            message_3 = message.get("3")
+            red_reminder = message_3.get("redReminder") if isinstance(message_3, dict) else None
+            if isinstance(message_1, list) and not red_reminder:
+                logger.debug(f"【{self.cookie_id}】[{msg_id}] ⏹️ 非聊天事件消息（message['1']为list），跳过处理")
+                return
 
             # 【优先处理】尝试获取订单ID并获取订单详情
             order_id = None
@@ -8675,7 +8783,7 @@ Cookie数量: {cookie_count}
                     except Exception as detail_e:
                         logger.error(f'[{msg_time}] 【{self.cookie_id}】❌ 获取订单详情异常: {self._safe_str(detail_e)}')
                 else:
-                    logger.warning(f"【{self.cookie_id}】[{msg_id}] 未检测到订单ID")
+                    logger.debug(f"【{self.cookie_id}】[{msg_id}] 未检测到订单ID")
             except Exception as e:
                 logger.error(f"【{self.cookie_id}】[{msg_id}] 提取订单ID失败: {self._safe_str(e)}")
 
@@ -9700,24 +9808,37 @@ Cookie数量: {cookie_count}
                     items_list = []
                     for card in card_list:
                         card_data = card.get('cardData', {})
-                        if card_data:
-                            # 提取商品基本信息
-                            item_info = {
-                                'id': card_data.get('id', ''),
-                                'title': card_data.get('title', ''),
-                                'price': card_data.get('priceInfo', {}).get('price', ''),
-                                'price_text': card_data.get('priceInfo', {}).get('preText', '') + card_data.get('priceInfo', {}).get('price', ''),
-                                'category_id': card_data.get('categoryId', ''),
-                                'auction_type': card_data.get('auctionType', ''),
-                                'item_status': card_data.get('itemStatus', 0),
-                                'detail_url': card_data.get('detailUrl', ''),
-                                'pic_info': card_data.get('picInfo', {}),
-                                'detail_params': card_data.get('detailParams', {}),
-                                'track_params': card_data.get('trackParams', {}),
-                                'item_label_data': card_data.get('itemLabelDataVO', {}),
-                                'card_type': card.get('cardType', 0)
-                            }
-                            items_list.append(item_info)
+                        if not card_data:
+                            continue
+
+                        price_info = card_data.get('priceInfo') or {}
+                        price_raw = price_info.get('price', '')
+                        pre_text = price_info.get('preText', '')
+
+                        price_raw_str = '' if price_raw is None else str(price_raw)
+                        pre_text_str = '' if pre_text is None else str(pre_text)
+                        if pre_text_str and price_raw_str.startswith(pre_text_str):
+                            price_text = price_raw_str
+                        else:
+                            price_text = (pre_text_str + price_raw_str).replace('￥￥', '￥').replace('¥¥', '¥')
+
+                        # 提取商品基本信息
+                        item_info = {
+                            'id': card_data.get('id', ''),
+                            'title': card_data.get('title', ''),
+                            'price': price_raw_str,
+                            'price_text': price_text,
+                            'category_id': card_data.get('categoryId', ''),
+                            'auction_type': card_data.get('auctionType', ''),
+                            'item_status': card_data.get('itemStatus', 0),
+                            'detail_url': card_data.get('detailUrl', ''),
+                            'pic_info': card_data.get('picInfo', {}),
+                            'detail_params': card_data.get('detailParams', {}),
+                            'track_params': card_data.get('trackParams', {}),
+                            'item_label_data': card_data.get('itemLabelDataVO', {}),
+                            'card_type': card.get('cardType', 0)
+                        }
+                        items_list.append(item_info)
 
                     logger.info(f"成功获取到 {len(items_list)} 个商品")
 
