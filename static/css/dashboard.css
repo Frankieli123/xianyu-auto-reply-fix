@@ -95,8 +95,8 @@
 .sales-range-group .sales-range-btn {
   min-width: 0;
   border-radius: 10px !important;
-  border: 1px solid transparent !important;
-  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(79, 70, 229, 0.16) !important;
+  background: rgba(255, 255, 255, 0.74);
   color: var(--primary-color);
   font-weight: 600;
   letter-spacing: 0.01em;
@@ -105,9 +105,11 @@
 }
 
 .sales-range-group .sales-range-btn:hover {
-  transform: translateY(-1px);
-  background: #fff;
-  box-shadow: 0 8px 16px rgba(79, 70, 229, 0.14);
+  transform: none;
+  background: rgba(255, 255, 255, 0.74);
+  color: var(--primary-color);
+  border-color: rgba(79, 70, 229, 0.16) !important;
+  box-shadow: none;
 }
 
 .sales-range-group .sales-range-btn:focus {
@@ -176,6 +178,14 @@
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
+}
+
+.chart-shell .card-header h5 {
+  color: var(--dark-color);
+}
+
+.chart-shell .card-header small {
+  color: var(--secondary-color) !important;
 }
 
 .vertical-chart {
@@ -321,7 +331,8 @@
 }
 
 [data-theme="dark"] .sales-range-group .sales-range-btn:hover {
-  background: rgba(51, 65, 85, 0.95);
+  background: rgba(30, 41, 59, 0.86);
+  color: #c7d2fe;
 }
 
 [data-theme="dark"] .sales-range-group .sales-range-btn.active {
