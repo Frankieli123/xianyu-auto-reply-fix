@@ -202,60 +202,95 @@
         </div>
       </div>
       <div class="content-body">
-        <div class="dashboard-stats">
-          <div class="stat-card">
-            <div class="stat-icon primary">
-              <i class="bi bi-person-circle"></i>
+        <div class="card sales-filter-panel">
+          <div class="card-body">
+            <div class="sales-filter-row">
+              <div class="sales-range-group" role="group" aria-label="销售时间筛选">
+                <button type="button" class="btn btn-outline-primary sales-range-btn" data-range="today">今天</button>
+                <button type="button" class="btn btn-outline-primary sales-range-btn" data-range="yesterday">昨天</button>
+                <button type="button" class="btn btn-outline-primary sales-range-btn active" data-range="7d">7天内</button>
+                <button type="button" class="btn btn-outline-primary sales-range-btn" data-range="30d">一个月内</button>
+                <button type="button" class="btn btn-outline-primary sales-range-btn" data-range="custom">自定义</button>
+              </div>
+              <div class="custom-range-fields" id="dashboardCustomRangeFields">
+                <input type="date" class="form-control form-control-sm" id="dashboardCustomStartDate">
+                <span class="text-muted">至</span>
+                <input type="date" class="form-control form-control-sm" id="dashboardCustomEndDate">
+                <button type="button" class="btn btn-sm btn-primary" id="dashboardCustomApplyBtn">查询</button>
+              </div>
             </div>
-            <div class="stat-number" id="totalAccounts">0</div>
-            <div class="stat-label">总账号数</div>
           </div>
+        </div>
+
+        <div class="dashboard-stats mt-4">
           <div class="stat-card">
             <div class="stat-icon success">
-              <i class="bi bi-chat-left-text"></i>
+              <i class="bi bi-cash-coin"></i>
             </div>
-            <div class="stat-number" id="totalKeywords">0</div>
-            <div class="stat-label">总关键词数</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon warning">
-              <i class="bi bi-activity"></i>
-            </div>
-            <div class="stat-number" id="activeAccounts">0</div>
-            <div class="stat-label">启用账号数</div>
+            <div class="stat-number" id="dashboardTotalRevenue">¥0.00</div>
+            <div class="stat-label">累计营收</div>
           </div>
           <div class="stat-card">
             <div class="stat-icon info">
               <i class="bi bi-receipt-cutoff"></i>
             </div>
-            <div class="stat-number" id="totalOrders">0</div>
-            <div class="stat-label">总订单数</div>
+            <div class="stat-number" id="dashboardTotalOrders">0</div>
+            <div class="stat-label">订单数</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon primary">
+              <i class="bi bi-person-badge"></i>
+            </div>
+            <div class="stat-number" id="dashboardTotalAccounts">0</div>
+            <div class="stat-label">账号数</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon warning">
+              <i class="bi bi-box-seam"></i>
+            </div>
+            <div class="stat-number" id="dashboardInventoryCards">0</div>
+            <div class="stat-label">库存卡密</div>
           </div>
         </div>
 
-        <!-- 账号详情列表 -->
-        <div class="card">
-          <div class="card-header">
-            <h5 class="mb-0">
-              <i class="bi bi-list-ul me-2"></i>
-              账号详情
-            </h5>
+        <div class="dashboard-grid-two">
+          <div class="card chart-shell">
+            <div class="card-header">
+              <h5 class="mb-0">营收趋势分析</h5>
+              <small class="text-muted">最近7天的销售额走势</small>
+            </div>
+            <div class="card-body">
+              <div id="revenueTrendChart" class="vertical-chart"></div>
+            </div>
           </div>
-          <div class="card-body p-0">
-            <div class="table-responsive">
-              <table class="table table-hover mb-0">
-                <thead>
-                  <tr>
-                    <th>账号ID</th>
-                    <th>关键词数量</th>
-                    <th>状态</th>
-                    <th>最后更新</th>
-                  </tr>
-                </thead>
-                <tbody id="dashboardAccountsList">
-                  <!-- 动态生成 -->
-                </tbody>
-              </table>
+          <div class="card chart-shell">
+            <div class="card-header">
+              <h5 class="mb-0">利润趋势分析</h5>
+              <small class="text-muted">最近7天的利润走势</small>
+            </div>
+            <div class="card-body">
+              <div id="profitTrendChart" class="vertical-chart"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="dashboard-grid-two mt-4">
+          <div class="card chart-shell">
+            <div class="card-header">
+              <h5 class="mb-0">商品销量排行</h5>
+              <small class="text-muted">按销售数量降序</small>
+            </div>
+            <div class="card-body">
+              <div id="productSalesRanking" class="ranking-list"></div>
+            </div>
+          </div>
+          <div class="card chart-shell">
+            <div class="card-header">
+              <h5 class="mb-0">账号销量排行</h5>
+              <small class="text-muted">按销售数量降序</small>
+            </div>
+            <div class="card-body">
+              <div id="accountSalesRanking" class="ranking-list"></div>
             </div>
           </div>
         </div>
@@ -1016,6 +1051,7 @@
                         <th>类型</th>
                         <th>规格信息</th>
                         <th>数据量</th>
+                        <th>成本价</th>
                         <th>延时时间</th>
                         <th>状态</th>
                         <th>创建时间</th>
@@ -1024,7 +1060,7 @@
                     </thead>
                     <tbody id="cardsTableBody">
                       <tr>
-                        <td colspan="7" class="text-center py-4 text-muted">
+                        <td colspan="9" class="text-center py-4 text-muted">
                           <i class="bi bi-credit-card fs-1 d-block mb-3"></i>
                           <h5>暂无卡券数据</h5>
                           <p class="mb-0">点击"添加卡券"开始创建您的第一个卡券</p>
@@ -3233,6 +3269,18 @@
             </div>
 
             <div class="mb-3">
+              <label class="form-label">成本价</label>
+              <div class="input-group">
+                <span class="input-group-text">¥</span>
+                <input type="number" class="form-control" id="cardCostPrice" value="0" min="0" step="0.01" placeholder="0.00">
+              </div>
+              <small class="form-text text-muted">
+                <i class="bi bi-graph-down me-1"></i>
+                用于仪表盘利润统计，按每份卡券成本计算
+              </small>
+            </div>
+
+            <div class="mb-3">
               <label class="form-label">备注信息</label>
               <textarea class="form-control" id="cardDescription" rows="3" placeholder="可选的备注信息，支持变量替换：&#10;{DELIVERY_CONTENT} - 发货内容&#10;例如：您的卡券信息：{DELIVERY_CONTENT}，请妥善保管。"></textarea>
               <small class="form-text text-muted">
@@ -3565,6 +3613,18 @@
               <small class="form-text text-muted">
                 <i class="bi bi-clock me-1"></i>
                 设置自动发货的延时时间，0表示立即发货，最大3600秒(1小时)
+              </small>
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label">成本价</label>
+              <div class="input-group">
+                <span class="input-group-text">¥</span>
+                <input type="number" class="form-control" id="editCardCostPrice" value="0" min="0" step="0.01" placeholder="0.00">
+              </div>
+              <small class="form-text text-muted">
+                <i class="bi bi-graph-down me-1"></i>
+                用于仪表盘利润统计，按每份卡券成本计算
               </small>
             </div>
 

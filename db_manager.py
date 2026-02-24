@@ -223,6 +223,7 @@ class DBManager:
                 description TEXT,
                 enabled BOOLEAN DEFAULT TRUE,
                 delay_seconds INTEGER DEFAULT 0,
+                cost_price REAL DEFAULT 0,
                 is_multi_spec BOOLEAN DEFAULT FALSE,
                 spec_name TEXT,
                 spec_value TEXT,
@@ -293,6 +294,14 @@ class DBManager:
                 logger.info("正在为 cards 表添加 delay_seconds 列...")
                 self._execute_sql(cursor, "ALTER TABLE cards ADD COLUMN delay_seconds INTEGER DEFAULT 0")
                 logger.info("cards 表 delay_seconds 列添加完成")
+
+            # 检查并添加 cost_price 列（用于利润统计）
+            try:
+                self._execute_sql(cursor, "SELECT cost_price FROM cards LIMIT 1")
+            except sqlite3.OperationalError:
+                logger.info("正在为 cards 表添加 cost_price 列...")
+                self._execute_sql(cursor, "ALTER TABLE cards ADD COLUMN cost_price REAL DEFAULT 0")
+                logger.info("cards 表 cost_price 列添加完成")
 
             # 检查并添加 item_id 列（用于自动回复商品ID功能）
             try:
@@ -3778,6 +3787,7 @@ Cookie数量: {cookie_count}
     def create_card(self, name: str, card_type: str, api_config=None,
                    text_content: str = None, data_content: str = None, image_url: str = None,
                    description: str = None, enabled: bool = True, delay_seconds: int = 0,
+                   cost_price: float = 0,
                    is_multi_spec: bool = False, spec_name: str = None, spec_value: str = None,
                    spec_name_2: str = None, spec_value_2: str = None, user_id: int = None):
         """创建新卡券（支持双规格）"""
@@ -3826,11 +3836,11 @@ Cookie数量: {cookie_count}
 
                 cursor.execute('''
                 INSERT INTO cards (name, type, api_config, text_content, data_content, image_url,
-                                 description, enabled, delay_seconds, is_multi_spec,
+                                 description, enabled, delay_seconds, cost_price, is_multi_spec,
                                  spec_name, spec_value, spec_name_2, spec_value_2, user_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (name, card_type, api_config_str, text_content, data_content, image_url,
-                      description, enabled, delay_seconds, is_multi_spec,
+                      description, enabled, delay_seconds, cost_price, is_multi_spec,
                       spec_name, spec_value, spec_name_2, spec_value_2, user_id))
                 self.conn.commit()
                 card_id = cursor.lastrowid
@@ -3852,7 +3862,7 @@ Cookie数量: {cookie_count}
                 if user_id is not None:
                     cursor.execute('''
                     SELECT id, name, type, api_config, text_content, data_content, image_url,
-                           description, enabled, delay_seconds, is_multi_spec,
+                           description, enabled, delay_seconds, cost_price, is_multi_spec,
                            spec_name, spec_value, spec_name_2, spec_value_2, created_at, updated_at
                     FROM cards
                     WHERE user_id = ?
@@ -3861,7 +3871,7 @@ Cookie数量: {cookie_count}
                 else:
                     cursor.execute('''
                     SELECT id, name, type, api_config, text_content, data_content, image_url,
-                           description, enabled, delay_seconds, is_multi_spec,
+                           description, enabled, delay_seconds, cost_price, is_multi_spec,
                            spec_name, spec_value, spec_name_2, spec_value_2, created_at, updated_at
                     FROM cards
                     ORDER BY created_at DESC
@@ -3890,13 +3900,14 @@ Cookie数量: {cookie_count}
                         'description': row[7],
                         'enabled': bool(row[8]),
                         'delay_seconds': row[9] or 0,
-                        'is_multi_spec': bool(row[10]) if row[10] is not None else False,
-                        'spec_name': row[11],
-                        'spec_value': row[12],
-                        'spec_name_2': row[13],
-                        'spec_value_2': row[14],
-                        'created_at': row[15],
-                        'updated_at': row[16]
+                        'cost_price': float(row[10] or 0),
+                        'is_multi_spec': bool(row[11]) if row[11] is not None else False,
+                        'spec_name': row[12],
+                        'spec_value': row[13],
+                        'spec_name_2': row[14],
+                        'spec_value_2': row[15],
+                        'created_at': row[16],
+                        'updated_at': row[17]
                     })
 
                 return cards
@@ -3912,14 +3923,14 @@ Cookie数量: {cookie_count}
                 if user_id is not None:
                     cursor.execute('''
                     SELECT id, name, type, api_config, text_content, data_content, image_url,
-                           description, enabled, delay_seconds, is_multi_spec,
+                           description, enabled, delay_seconds, cost_price, is_multi_spec,
                            spec_name, spec_value, spec_name_2, spec_value_2, created_at, updated_at
                     FROM cards WHERE id = ? AND user_id = ?
                     ''', (card_id, user_id))
                 else:
                     cursor.execute('''
                     SELECT id, name, type, api_config, text_content, data_content, image_url,
-                           description, enabled, delay_seconds, is_multi_spec,
+                           description, enabled, delay_seconds, cost_price, is_multi_spec,
                            spec_name, spec_value, spec_name_2, spec_value_2, created_at, updated_at
                     FROM cards WHERE id = ?
                     ''', (card_id,))
@@ -3947,13 +3958,14 @@ Cookie数量: {cookie_count}
                         'description': row[7],
                         'enabled': bool(row[8]),
                         'delay_seconds': row[9] or 0,
-                        'is_multi_spec': bool(row[10]) if row[10] is not None else False,
-                        'spec_name': row[11],
-                        'spec_value': row[12],
-                        'spec_name_2': row[13],
-                        'spec_value_2': row[14],
-                        'created_at': row[15],
-                        'updated_at': row[16]
+                        'cost_price': float(row[10] or 0),
+                        'is_multi_spec': bool(row[11]) if row[11] is not None else False,
+                        'spec_name': row[12],
+                        'spec_value': row[13],
+                        'spec_name_2': row[14],
+                        'spec_value_2': row[15],
+                        'created_at': row[16],
+                        'updated_at': row[17]
                     }
                 return None
             except Exception as e:
@@ -3963,7 +3975,7 @@ Cookie数量: {cookie_count}
     def update_card(self, card_id: int, name: str = None, card_type: str = None,
                    api_config=None, text_content: str = None, data_content: str = None,
                    image_url: str = None, description: str = None, enabled: bool = None,
-                   delay_seconds: int = None, is_multi_spec: bool = None, spec_name: str = None,
+                   delay_seconds: int = None, cost_price: float = None, is_multi_spec: bool = None, spec_name: str = None,
                    spec_value: str = None, spec_name_2: str = None, spec_value_2: str = None):
         """更新卡券"""
         # 调试日志
@@ -4017,6 +4029,9 @@ Cookie数量: {cookie_count}
                 if delay_seconds is not None:
                     update_fields.append("delay_seconds = ?")
                     params.append(delay_seconds)
+                if cost_price is not None:
+                    update_fields.append("cost_price = ?")
+                    params.append(cost_price)
                 if is_multi_spec is not None:
                     update_fields.append("is_multi_spec = ?")
                     params.append(is_multi_spec)
