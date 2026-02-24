@@ -1802,6 +1802,8 @@ def get_cookies_details(current_user: Dict[str, Any] = Depends(get_current_user)
     user_cookies = db_manager.get_all_cookies(user_id)
 
     result = []
+    required_cookie_keys = ('unb', '_m_h5_tk', '_m_h5_tk_enc', 'cookie2', 't')
+
     for cookie_id, cookie_value in user_cookies.items():
         cookie_enabled = cookie_manager.manager.get_cookie_status(cookie_id)
         auto_confirm = db_manager.get_auto_confirm(cookie_id)
@@ -1812,6 +1814,27 @@ def get_cookies_details(current_user: Dict[str, Any] = Depends(get_current_user)
         username = cookie_details.get('username', '') if cookie_details else ''
         password = cookie_details.get('password', '') if cookie_details else ''
 
+        # Cookie健康状态（基于关键字段完整性）
+        cookie_map = {}
+        if cookie_value:
+            for cookie_part in cookie_value.split(';'):
+                cookie_part = cookie_part.strip()
+                if '=' not in cookie_part:
+                    continue
+                key, value = cookie_part.split('=', 1)
+                cookie_map[key.strip()] = value.strip()
+
+        cookie_missing_fields = [k for k in required_cookie_keys if not cookie_map.get(k)]
+        cookie_health = len(cookie_missing_fields) == 0
+
+        # 运行时连接状态（WebSocket状态）
+        runtime_connection_state = None
+        live_instance = cookie_manager.manager.get_xianyu_instance(cookie_id)
+        if live_instance is not None:
+            state = getattr(live_instance, 'connection_state', None)
+            if state is not None:
+                runtime_connection_state = getattr(state, 'value', str(state))
+
         result.append({
             'id': cookie_id,
             'value': cookie_value,
@@ -1821,7 +1844,10 @@ def get_cookies_details(current_user: Dict[str, Any] = Depends(get_current_user)
             'remark': remark,
             'username': username,
             'password': password,
-            'pause_duration': cookie_details.get('pause_duration', 10) if cookie_details else 10
+            'pause_duration': cookie_details.get('pause_duration', 10) if cookie_details else 10,
+            'cookie_health': cookie_health,
+            'cookie_missing_fields': cookie_missing_fields,
+            'runtime_connection_state': runtime_connection_state
         })
     return result
 

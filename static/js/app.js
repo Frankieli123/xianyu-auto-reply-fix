@@ -1650,7 +1650,7 @@ async function loadCookies() {
     if (cookieDetails.length === 0) {
         tbody.innerHTML = `
         <tr>
-            <td colspan="10" class="text-center py-4 text-muted empty-state">
+            <td colspan="12" class="text-center py-4 text-muted empty-state">
             <i class="bi bi-inbox fs-1 d-block mb-3"></i>
             <h5>暂无账号</h5>
             <p class="mb-0">请添加新的闲鱼账号开始使用</p>
@@ -1736,6 +1736,50 @@ async function loadCookies() {
         // 自动好评状态（默认关闭）
         const autoComment = cookie.auto_comment === undefined ? false : cookie.auto_comment;
 
+        // Cookie连接状态（后端未升级时，前端兜底计算）
+        const requiredCookieKeys = ['unb', '_m_h5_tk', '_m_h5_tk_enc', 'cookie2', 't'];
+        let missingFields = Array.isArray(cookie.cookie_missing_fields) ? cookie.cookie_missing_fields : null;
+        let cookieHealthy = typeof cookie.cookie_health === 'boolean' ? cookie.cookie_health : null;
+
+        if (cookieHealthy === null || !Array.isArray(missingFields)) {
+            const cookieMap = {};
+            const cookieValue = cookie.value || '';
+            if (cookieValue) {
+                cookieValue.split(';').forEach(part => {
+                    const item = part.trim();
+                    if (!item || !item.includes('=')) return;
+                    const idx = item.indexOf('=');
+                    const key = item.slice(0, idx).trim();
+                    const val = item.slice(idx + 1).trim();
+                    cookieMap[key] = val;
+                });
+            }
+            missingFields = requiredCookieKeys.filter(key => !cookieMap[key]);
+            cookieHealthy = missingFields.length === 0;
+        }
+
+        const runtimeStateRaw = cookie.runtime_connection_state || '';
+        const runtimeStateMap = {
+            connected: '已连接',
+            connecting: '连接中',
+            reconnecting: '重连中',
+            disconnected: '未连接',
+            failed: '连接失败',
+            closed: '已关闭'
+        };
+        const runtimeStateText = runtimeStateMap[runtimeStateRaw] || runtimeStateRaw || '';
+        const runtimeStateHtml = runtimeStateText ? `<small class="text-muted d-block mt-1">${runtimeStateText}</small>` : '';
+        const connectionBadgeClass = cookieHealthy ? 'bg-success' : 'bg-danger';
+        const connectionBadgeText = cookieHealthy ? 'Cookie正常' : 'Cookie异常';
+        const connectionTips = [`Cookie: ${connectionBadgeText}`];
+        if (!cookieHealthy && missingFields.length > 0) {
+            connectionTips.push(`缺失字段: ${missingFields.join(', ')}`);
+        }
+        if (runtimeStateRaw) {
+            connectionTips.push(`运行态: ${runtimeStateText}`);
+        }
+        const connectionTooltip = escapeHtml(connectionTips.join(' | '));
+
         tr.innerHTML = `
         <td class="align-middle">
             <div class="cookie-id">
@@ -1762,6 +1806,12 @@ async function loadCookies() {
                 <i class="bi bi-${isEnabled ? 'check-circle-fill' : 'x-circle-fill'}"></i>
             </span>
             </div>
+        </td>
+        <td class="align-middle">
+            <span class="badge ${connectionBadgeClass}" title="${connectionTooltip}">
+            ${connectionBadgeText}
+            </span>
+            ${runtimeStateHtml}
         </td>
         <td class="align-middle">
             ${defaultReplyBadge}
@@ -9677,6 +9727,8 @@ function resetPasswordLoginForm() {
 
 let qrCodeCheckInterval = null;
 let qrCodeSessionId = null;
+let qrVerificationPromptShown = false;
+let qrVerificationUrl = null;
 
 // 显示扫码登录模态框
 function showQRCodeLogin() {
@@ -9732,6 +9784,9 @@ async function generateQRCode() {
 
 // 显示二维码加载状态
 function showQRCodeLoading() {
+    qrVerificationPromptShown = false;
+    qrVerificationUrl = null;
+
     document.getElementById('qrCodeContainer').style.display = 'block';
     document.getElementById('qrCodeImage').style.display = 'none';
     document.getElementById('statusText').textContent = '正在生成二维码，请耐心等待...';
@@ -9741,6 +9796,7 @@ function showQRCodeLoading() {
     const verificationContainer = document.getElementById('verificationContainer');
     if (verificationContainer) {
     verificationContainer.style.display = 'none';
+    verificationContainer.innerHTML = '';
     }
 }
 
@@ -9817,9 +9873,8 @@ async function checkQRCodeStatus() {
             clearQRCodeCheck();
             break;
         case 'verification_required':
-            document.getElementById('statusText').textContent = '需要手机验证';
-            document.getElementById('statusSpinner').style.display = 'none';
-            clearQRCodeCheck();
+            document.getElementById('statusText').textContent = '需要手机验证，完成后将自动继续...';
+            document.getElementById('statusSpinner').style.display = 'inline-block';
             showVerificationRequired(data);
             break;
         case 'processing':
@@ -9841,7 +9896,18 @@ async function checkQRCodeStatus() {
 
 // 显示需要验证的提示
 function showVerificationRequired(data) {
-    if (data.verification_url) {
+    if (!data.verification_url) return;
+
+    // 创建验证提示容器
+    let verificationContainer = document.getElementById('verificationContainer');
+    if (!verificationContainer) {
+    verificationContainer = document.createElement('div');
+    verificationContainer.id = 'verificationContainer';
+    document.querySelector('#qrCodeLoginModal .modal-body').appendChild(verificationContainer);
+    }
+
+    const shouldRerender = !qrVerificationPromptShown || qrVerificationUrl !== data.verification_url;
+    if (shouldRerender) {
     // 隐藏二维码区域
     document.getElementById('qrCodeContainer').style.display = 'none';
     document.getElementById('qrCodeImage').style.display = 'none';
@@ -9870,25 +9936,21 @@ function showVerificationRequired(data) {
             <strong>验证步骤：</strong><br>
             1. 点击上方按钮打开验证页面<br>
             2. 按照页面提示完成手机验证<br>
-            3. 验证完成后，重新扫码登录
+            3. 验证完成后会自动继续登录，无需重新扫码
             </small>
         </div>
         </div>
     `;
 
-    // 创建验证提示容器
-    let verificationContainer = document.getElementById('verificationContainer');
-    if (!verificationContainer) {
-        verificationContainer = document.createElement('div');
-        verificationContainer.id = 'verificationContainer';
-        document.querySelector('#qrCodeLoginModal .modal-body').appendChild(verificationContainer);
+    verificationContainer.innerHTML = verificationHtml;
+    qrVerificationUrl = data.verification_url;
     }
 
-    verificationContainer.innerHTML = verificationHtml;
     verificationContainer.style.display = 'block';
 
-    // 显示Toast提示
+    if (!qrVerificationPromptShown) {
     showToast('账号需要手机验证，请按照提示完成验证', 'warning');
+    qrVerificationPromptShown = true;
     }
 }
 
@@ -9946,6 +10008,14 @@ function clearQRCodeCheck() {
     qrCodeCheckInterval = null;
     }
     qrCodeSessionId = null;
+    qrVerificationPromptShown = false;
+    qrVerificationUrl = null;
+
+    const verificationContainer = document.getElementById('verificationContainer');
+    if (verificationContainer) {
+    verificationContainer.style.display = 'none';
+    verificationContainer.innerHTML = '';
+    }
 }
 
 // 刷新二维码
@@ -15499,4 +15569,3 @@ function loadOnlineIm() {
         iframe.src = realSrc;
     }
 }
-

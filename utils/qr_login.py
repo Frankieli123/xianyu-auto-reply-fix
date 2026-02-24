@@ -323,36 +323,30 @@ class QRLoginManager:
 
                     # 轮询二维码状态
                     resp = await self._poll_qrcode_status(session)
-                    qrcode_status = (
-                        resp.json()
-                        .get("content", {})
-                        .get("data", {})
-                        .get("qrCodeStatus")
-                    )
+                    resp_data = resp.json().get("content", {}).get("data", {})
+                    qrcode_status = resp_data.get("qrCodeStatus")
 
                     if qrcode_status == "CONFIRMED":
                         # 登录确认
-                        if (
-                            resp.json()
-                            .get("content", {})
-                            .get("data", {})
-                            .get("iframeRedirect")
-                            is True
-                        ):
+                        if resp_data.get("iframeRedirect") is True:
                             # 账号被风控，需要手机验证
+                            was_verification_required = session.status == 'verification_required'
                             session.status = 'verification_required'
-                            iframe_url = (
-                                resp.json()
-                                .get("content", {})
-                                .get("data", {})
-                                .get("iframeRedirectUrl")
-                            )
-                            session.verification_url = iframe_url
-                            logger.warning(f"账号被风控，需要手机验证: {session_id}, URL: {iframe_url}")
-                            break
+                            iframe_url = resp_data.get("iframeRedirectUrl")
+                            if iframe_url:
+                                session.verification_url = iframe_url
+
+                            if not was_verification_required:
+                                logger.warning(f"账号被风控，需要手机验证: {session_id}, URL: {iframe_url}")
+
+                            # 不中断监控，等待用户完成手机验证后自动转为success
                         else:
                             # 登录成功
+                            if session.status == 'verification_required':
+                                logger.info(f"检测到手机验证已完成，继续登录流程: {session_id}")
+
                             session.status = 'success'
+                            session.verification_url = None
 
                             # 保存Cookie
                             for k, v in resp.cookies.items():
@@ -378,11 +372,14 @@ class QRLoginManager:
                         if session.status == 'waiting':
                             session.status = 'scanned'
                             logger.info(f"二维码已扫描，等待确认: {session_id}")
-                    else:
+                    elif qrcode_status in ("CANCELLED", "CANCELED"):
                         # 用户取消确认
                         session.status = 'cancelled'
                         logger.info(f"用户取消登录: {session_id}")
                         break
+                    else:
+                        # 未知状态，继续轮询避免误判
+                        logger.debug(f"二维码状态未知，继续监控: {session_id}, status={qrcode_status}")
 
                     await asyncio.sleep(0.8)  # 每0.8秒检查一次
 
