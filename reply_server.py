@@ -5422,6 +5422,7 @@ def create_card(card_data: dict, current_user: Dict[str, Any] = Depends(get_curr
             description=card_data.get('description'),
             enabled=card_data.get('enabled', True),
             delay_seconds=card_data.get('delay_seconds', 0),
+            cost_price=card_data.get('cost_price', 0),
             is_multi_spec=is_multi_spec,
             spec_name=card_data.get('spec_name') if is_multi_spec else None,
             spec_value=card_data.get('spec_value') if is_multi_spec else None,
@@ -5482,6 +5483,7 @@ def update_card(card_id: int, card_data: dict, current_user: Dict[str, Any] = De
             description=card_data.get('description'),
             enabled=card_data.get('enabled', True),
             delay_seconds=card_data.get('delay_seconds'),
+            cost_price=card_data.get('cost_price'),
             is_multi_spec=is_multi_spec,
             spec_name=card_data.get('spec_name'),
             spec_value=card_data.get('spec_value'),
@@ -5504,6 +5506,7 @@ async def update_card_with_image(
     type: str = Form(...),
     description: str = Form(default=""),
     delay_seconds: int = Form(default=0),
+    cost_price: float = Form(default=0),
     enabled: bool = Form(default=True),
     is_multi_spec: bool = Form(default=False),
     spec_name: str = Form(default=""),
@@ -5548,6 +5551,7 @@ async def update_card_with_image(
             description=description,
             enabled=enabled,
             delay_seconds=delay_seconds,
+            cost_price=cost_price,
             is_multi_spec=is_multi_spec,
             spec_name=spec_name if is_multi_spec else None,
             spec_value=spec_value if is_multi_spec else None,
@@ -7499,6 +7503,358 @@ def update_item_multi_quantity_delivery(cookie_id: str, item_id: str, delivery_d
 
 
 
+
+
+# ==================== 销售仪表盘接口 ====================
+
+@app.get('/api/dashboard/sales')
+def get_dashboard_sales(
+    range: str = '7d',
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """获取销售仪表盘统计数据"""
+    from datetime import datetime, timedelta
+
+    def parse_datetime(value: Any) -> Optional[datetime]:
+        if not value:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        text = text.replace('T', ' ')
+        try:
+            return datetime.fromisoformat(text)
+        except Exception:
+            for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d'):
+                try:
+                    return datetime.strptime(text, fmt)
+                except Exception:
+                    continue
+        return None
+
+    def parse_amount(value: Any) -> float:
+        if value is None:
+            return 0.0
+        text = str(value).replace('¥', '').replace('￥', '').replace('$', '').replace(',', '').strip()
+        if not text:
+            return 0.0
+        try:
+            return float(text)
+        except Exception:
+            return 0.0
+
+    def parse_quantity(value: Any) -> int:
+        if value is None or value == '':
+            return 1
+        text = str(value).strip().lower()
+        if text.startswith('x'):
+            text = text[1:]
+        try:
+            quantity = int(float(text))
+            return quantity if quantity > 0 else 1
+        except Exception:
+            return 1
+
+    try:
+        user_id = current_user['user_id']
+        user_cookies = db_manager.get_all_cookies(user_id)
+        cookie_ids = list(user_cookies.keys())
+        range_type = (range or '7d').strip().lower()
+
+        now = datetime.now()
+        today_start = datetime(now.year, now.month, now.day)
+        if range_type == 'today':
+            start_dt = today_start
+            end_dt = today_start + timedelta(days=1)
+        elif range_type == 'yesterday':
+            start_dt = today_start - timedelta(days=1)
+            end_dt = today_start
+        elif range_type == '30d':
+            start_dt = today_start - timedelta(days=29)
+            end_dt = today_start + timedelta(days=1)
+        elif range_type == 'custom':
+            if not start_date or not end_date:
+                raise HTTPException(status_code=400, detail='自定义范围必须提供开始和结束日期')
+            try:
+                start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+                end_dt = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
+            except ValueError:
+                raise HTTPException(status_code=400, detail='日期格式错误，应为 YYYY-MM-DD')
+            if start_dt >= end_dt:
+                raise HTTPException(status_code=400, detail='开始日期不能晚于结束日期')
+            if (end_dt - start_dt).days > 366:
+                raise HTTPException(status_code=400, detail='自定义范围最多支持366天')
+        else:
+            range_type = '7d'
+            start_dt = today_start - timedelta(days=6)
+            end_dt = today_start + timedelta(days=1)
+
+        # 趋势图固定展示最近7天，不受顶部筛选影响
+        trend_start_dt = today_start - timedelta(days=6)
+        trend_end_dt = today_start + timedelta(days=1)
+
+        all_orders = []
+        for cookie_id in cookie_ids:
+            orders = db_manager.get_orders_by_cookie(cookie_id, limit=5000)
+            for order in orders:
+                order['cookie_id'] = cookie_id
+                all_orders.append(order)
+
+        excluded_status = {'closed', 'refunded', 'pending_payment'}
+        filtered_orders = []
+        trend_orders = []
+        for order in all_orders:
+            order_status = (order.get('order_status') or '').strip().lower()
+            if order_status in excluded_status:
+                continue
+
+            created_dt = parse_datetime(order.get('created_at'))
+            if created_dt is None:
+                continue
+            order['_created_dt'] = created_dt
+            order['_amount'] = parse_amount(order.get('amount'))
+            order['_quantity'] = parse_quantity(order.get('quantity'))
+
+            if start_dt <= created_dt < end_dt:
+                filtered_orders.append(order)
+            if trend_start_dt <= created_dt < trend_end_dt:
+                trend_orders.append(order)
+
+        all_cards = db_manager.get_all_cards(user_id)
+        all_rules = db_manager.get_all_delivery_rules(user_id)
+        card_cost_map = {card.get('id'): float(card.get('cost_price') or 0) for card in all_cards}
+
+        inventory_card_count = 0
+        for card in all_cards:
+            if card.get('type') == 'data' and card.get('data_content'):
+                lines = [line.strip() for line in str(card.get('data_content')).split('\n') if line.strip()]
+                inventory_card_count += len(lines)
+
+        cookie_name_map = {}
+        for cookie_id in cookie_ids:
+            cookie_detail = db_manager.get_cookie_details(cookie_id) or {}
+            remark = (cookie_detail.get('remark') or '').strip()
+            cookie_name_map[cookie_id] = remark if remark else cookie_id
+
+        item_title_cache = {}
+        for order in filtered_orders + trend_orders:
+            cookie_id = order.get('cookie_id')
+            item_id = order.get('item_id')
+            cache_key = f"{cookie_id}:{item_id}"
+            if cache_key not in item_title_cache:
+                title = item_id or '未知商品'
+                if cookie_id and item_id:
+                    item_info = db_manager.get_item_info(cookie_id, item_id) or {}
+                    title = item_info.get('item_title') or item_id
+                item_title_cache[cache_key] = title
+            order['_item_title'] = item_title_cache.get(cache_key, item_id or '未知商品')
+
+        def match_delivery_rule(order: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            item_title = (order.get('_item_title') or '').strip()
+            if not item_title:
+                return None
+
+            def keyword_matches(keyword: str) -> bool:
+                if not keyword:
+                    return False
+                return keyword in item_title or item_title in keyword
+
+            candidates = []
+            for rule in all_rules:
+                keyword = str(rule.get('keyword') or '').strip()
+                if not keyword:
+                    continue
+                if not keyword_matches(keyword):
+                    continue
+                candidates.append(rule)
+
+            if not candidates:
+                return None
+
+            spec_name = (order.get('spec_name') or '').strip()
+            spec_value = (order.get('spec_value') or '').strip()
+            spec_name_2 = (order.get('spec_name_2') or '').strip()
+            spec_value_2 = (order.get('spec_value_2') or '').strip()
+
+            if spec_name and spec_value:
+                strict_matches = []
+                for rule in candidates:
+                    if not rule.get('is_multi_spec'):
+                        continue
+                    if (rule.get('spec_name') or '').strip() != spec_name:
+                        continue
+                    if (rule.get('spec_value') or '').strip() != spec_value:
+                        continue
+                    rule_spec_name_2 = (rule.get('spec_name_2') or '').strip()
+                    rule_spec_value_2 = (rule.get('spec_value_2') or '').strip()
+                    if spec_name_2 and spec_value_2:
+                        if rule_spec_name_2 == spec_name_2 and rule_spec_value_2 == spec_value_2:
+                            strict_matches.append(rule)
+                    else:
+                        if not rule_spec_name_2 and not rule_spec_value_2:
+                            strict_matches.append(rule)
+
+                if strict_matches:
+                    candidates = strict_matches
+                else:
+                    normal_matches = [rule for rule in candidates if not rule.get('is_multi_spec')]
+                    if normal_matches:
+                        candidates = normal_matches
+            else:
+                normal_matches = [rule for rule in candidates if not rule.get('is_multi_spec')]
+                if normal_matches:
+                    candidates = normal_matches
+
+            candidates.sort(
+                key=lambda rule: (
+                    1 if str(rule.get('keyword') or '') in item_title else 0,
+                    len(str(rule.get('keyword') or '')),
+                    -(rule.get('delivery_times') or 0)
+                ),
+                reverse=True
+            )
+            return candidates[0] if candidates else None
+
+        def calculate_order_profit(order: Dict[str, Any]) -> float:
+            matched_rule = match_delivery_rule(order)
+            cost_price = card_cost_map.get(matched_rule.get('card_id')) if matched_rule else 0
+            cost_price = float(cost_price or 0)
+            return float(order['_amount']) - (cost_price * int(order['_quantity']))
+
+        for order in filtered_orders + trend_orders:
+            if '_profit_value' not in order:
+                order['_profit_value'] = calculate_order_profit(order)
+
+        revenue_by_day = {}
+        profit_by_day = {}
+        current_day = trend_start_dt.date()
+        while current_day < trend_end_dt.date():
+            key = current_day.isoformat()
+            revenue_by_day[key] = 0.0
+            profit_by_day[key] = 0.0
+            current_day += timedelta(days=1)
+
+        total_revenue = 0.0
+        total_profit = 0.0
+        account_ids = set()
+        total_quantity = 0
+        product_stats: Dict[str, Dict[str, Any]] = {}
+        account_stats: Dict[str, Dict[str, Any]] = {}
+
+        for order in filtered_orders:
+            amount = float(order['_amount'])
+            quantity = int(order['_quantity'])
+            profit = float(order.get('_profit_value') or 0)
+            total_revenue += amount
+            total_profit += profit
+            total_quantity += quantity
+
+            account_id = order.get('cookie_id') or ''
+            if account_id:
+                account_ids.add(account_id)
+
+            product_key = order.get('item_id') or order.get('_item_title') or 'unknown'
+            if product_key not in product_stats:
+                product_stats[product_key] = {
+                    'product_id': order.get('item_id') or '',
+                    'product_name': order.get('_item_title') or order.get('item_id') or '未知商品',
+                    'quantity': 0,
+                    'amount': 0.0
+                }
+            product_stats[product_key]['quantity'] += quantity
+            product_stats[product_key]['amount'] += amount
+
+            if account_id:
+                if account_id not in account_stats:
+                    account_stats[account_id] = {
+                        'account_id': account_id,
+                        'account_name': cookie_name_map.get(account_id, account_id),
+                        'quantity': 0,
+                        'amount': 0.0
+                    }
+                account_stats[account_id]['quantity'] += quantity
+                account_stats[account_id]['amount'] += amount
+
+        for order in trend_orders:
+            created_dt = order['_created_dt']
+            day_key = created_dt.date().isoformat()
+            amount = float(order['_amount'])
+            profit = float(order.get('_profit_value') or 0)
+            revenue_by_day[day_key] = revenue_by_day.get(day_key, 0.0) + amount
+            profit_by_day[day_key] = profit_by_day.get(day_key, 0.0) + profit
+
+        revenue_trend = []
+        profit_trend = []
+        for day_key in sorted(revenue_by_day.keys()):
+            revenue_value = round(revenue_by_day.get(day_key, 0.0), 2)
+            profit_value = round(profit_by_day.get(day_key, 0.0), 2)
+            revenue_trend.append({
+                'date': day_key,
+                'date_label': day_key[5:],
+                'revenue': revenue_value
+            })
+            profit_trend.append({
+                'date': day_key,
+                'date_label': day_key[5:],
+                'profit': profit_value
+            })
+
+        sorted_products = sorted(
+            product_stats.values(),
+            key=lambda item: (item['quantity'], item['amount']),
+            reverse=True
+        )
+        product_rankings = []
+        for item in sorted_products[:10]:
+            percentage = (item['quantity'] / total_quantity * 100) if total_quantity > 0 else 0
+            product_rankings.append({
+                'product_id': item['product_id'],
+                'product_name': item['product_name'],
+                'quantity': item['quantity'],
+                'amount': round(item['amount'], 2),
+                'percentage': round(percentage, 2)
+            })
+
+        sorted_accounts = sorted(
+            account_stats.values(),
+            key=lambda item: (item['quantity'], item['amount']),
+            reverse=True
+        )
+        account_rankings = []
+        for item in sorted_accounts[:10]:
+            account_rankings.append({
+                'account_id': item['account_id'],
+                'account_name': item['account_name'],
+                'quantity': item['quantity'],
+                'amount': round(item['amount'], 2)
+            })
+
+        return {
+            'success': True,
+            'range': range_type,
+            'start_date': start_dt.date().isoformat(),
+            'end_date': (end_dt - timedelta(days=1)).date().isoformat(),
+            'summary': {
+                'total_revenue': round(total_revenue, 2),
+                'total_profit': round(total_profit, 2),
+                'total_orders': len(filtered_orders),
+                'account_count': len(account_ids),
+                'inventory_card_count': inventory_card_count
+            },
+            'revenue_trend': revenue_trend,
+            'profit_trend': profit_trend,
+            'product_rankings': product_rankings,
+            'account_rankings': account_rankings
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        logger.error(f"获取销售仪表盘数据失败: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"获取销售数据失败: {str(e)}")
 
 
 # ==================== 订单管理接口 ====================

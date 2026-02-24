@@ -8,9 +8,14 @@ let currentCookieId = '';
 let editCookieId = '';
 let authToken = localStorage.getItem('auth_token');
 let dashboardData = {
-    accounts: [],
-    totalKeywords: 0
+    sales: null
 };
+let dashboardFilterState = {
+    range: '7d',
+    startDate: '',
+    endDate: ''
+};
+let dashboardRequestSeq = 0;
 
 // 账号关键词缓存
 let accountKeywordCache = {};
@@ -269,171 +274,304 @@ function initDarkMode() {
 // 【仪表盘菜单】相关功能
 // ================================
 
+function initDashboardFilters() {
+    if (window.dashboardFiltersInited) {
+        return;
+    }
+    window.dashboardFiltersInited = true;
+
+    const customStartInput = document.getElementById('dashboardCustomStartDate');
+    const customEndInput = document.getElementById('dashboardCustomEndDate');
+    const customApplyBtn = document.getElementById('dashboardCustomApplyBtn');
+    const rangeButtons = document.querySelectorAll('.sales-range-btn');
+
+    const today = new Date();
+    const sevenDaysAgo = new Date(today);
+    sevenDaysAgo.setDate(today.getDate() - 6);
+
+    if (customStartInput) {
+        customStartInput.value = formatDateForInput(sevenDaysAgo);
+        dashboardFilterState.startDate = customStartInput.value;
+    }
+    if (customEndInput) {
+        customEndInput.value = formatDateForInput(today);
+        dashboardFilterState.endDate = customEndInput.value;
+    }
+
+    rangeButtons.forEach(button => {
+        button.addEventListener('click', () => {
+            const rangeType = button.dataset.range;
+            if (!rangeType) return;
+            setDashboardRange(rangeType);
+        });
+    });
+
+    if (customStartInput) {
+        customStartInput.addEventListener('change', () => {
+            dashboardFilterState.startDate = customStartInput.value;
+        });
+    }
+    if (customEndInput) {
+        customEndInput.addEventListener('change', () => {
+            dashboardFilterState.endDate = customEndInput.value;
+        });
+    }
+
+    if (customApplyBtn) {
+        customApplyBtn.addEventListener('click', () => {
+            if (dashboardFilterState.range !== 'custom') {
+                setDashboardRange('custom', false);
+            }
+            if (!validateCustomDashboardRange()) {
+                return;
+            }
+            loadDashboard();
+        });
+    }
+
+    setDashboardRange(dashboardFilterState.range, false);
+}
+
+function setDashboardRange(rangeType, reload = true) {
+    dashboardFilterState.range = rangeType;
+    const rangeButtons = document.querySelectorAll('.sales-range-btn');
+    rangeButtons.forEach(button => {
+        button.classList.toggle('active', button.dataset.range === rangeType);
+    });
+
+    const customRangeFields = document.getElementById('dashboardCustomRangeFields');
+    if (customRangeFields) {
+        customRangeFields.classList.toggle('show', rangeType === 'custom');
+    }
+
+    if (reload && rangeType !== 'custom') {
+        loadDashboard();
+    }
+}
+
+function validateCustomDashboardRange() {
+    const startDate = dashboardFilterState.startDate;
+    const endDate = dashboardFilterState.endDate;
+
+    if (!startDate || !endDate) {
+        showToast('请先选择自定义开始日期和结束日期', 'warning');
+        return false;
+    }
+    if (startDate > endDate) {
+        showToast('开始日期不能晚于结束日期', 'warning');
+        return false;
+    }
+    return true;
+}
+
+function formatDateForInput(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+function buildDashboardSalesQuery() {
+    const params = new URLSearchParams();
+    let rangeType = dashboardFilterState.range || '7d';
+
+    if (rangeType === 'custom' && (!dashboardFilterState.startDate || !dashboardFilterState.endDate)) {
+        rangeType = '7d';
+    }
+
+    params.set('range', rangeType);
+
+    if (rangeType === 'custom') {
+        params.set('start_date', dashboardFilterState.startDate);
+        params.set('end_date', dashboardFilterState.endDate);
+    }
+
+    return params.toString();
+}
+
+function toggleDashboardLoading(show) {
+    const dashboardSection = document.getElementById('dashboard-section');
+    if (!dashboardSection) return;
+    dashboardSection.classList.toggle('dashboard-loading', !!show);
+}
+
 // 加载仪表盘数据
 async function loadDashboard() {
+    const requestSeq = ++dashboardRequestSeq;
     try {
-    toggleLoading(true);
-
-    // 获取账号列表
-    const cookiesResponse = await fetch(`${apiBase}/cookies/details`, {
-        headers: {
-        'Authorization': `Bearer ${authToken}`
-        }
-    });
-
-    if (cookiesResponse.ok) {
-        const cookiesData = await cookiesResponse.json();
-
-        // 为每个账号获取关键词信息
-        const accountsWithKeywords = await Promise.all(
-        cookiesData.map(async (account) => {
-            try {
-            const keywordsResponse = await fetch(`${apiBase}/keywords/${account.id}`, {
-                headers: {
-                'Authorization': `Bearer ${authToken}`
-                }
-            });
-
-            if (keywordsResponse.ok) {
-                const keywordsData = await keywordsResponse.json();
-                return {
-                ...account,
-                keywords: keywordsData,
-                keywordCount: keywordsData.length
-                };
-            } else {
-                return {
-                ...account,
-                keywords: [],
-                keywordCount: 0
-                };
-            }
-            } catch (error) {
-            console.error(`获取账号 ${account.id} 关键词失败:`, error);
-            return {
-                ...account,
-                keywords: [],
-                keywordCount: 0
-            };
-            }
-        })
-        );
-
-        dashboardData.accounts = accountsWithKeywords;
-
-        // 计算统计数据
-        let totalKeywords = 0;
-        let activeAccounts = 0;
-        let enabledAccounts = 0;
-
-        accountsWithKeywords.forEach(account => {
-        const keywordCount = account.keywordCount || 0;
-        const isEnabled = account.enabled === undefined ? true : account.enabled;
-
-        if (isEnabled) {
-            enabledAccounts++;
-            totalKeywords += keywordCount;
-            if (keywordCount > 0) {
-            activeAccounts++;
-            }
-        }
-        });
-
-        dashboardData.totalKeywords = totalKeywords;
-
-        // 加载订单数量
-        await loadOrdersCount();
-
-        // 更新仪表盘显示
-        updateDashboardStats(accountsWithKeywords.length, totalKeywords, enabledAccounts);
-        updateDashboardAccountsList(accountsWithKeywords);
-    }
-    } catch (error) {
-    console.error('加载仪表盘数据失败:', error);
-    showToast('加载仪表盘数据失败', 'danger');
-    } finally {
-    toggleLoading(false);
-    }
-}
-
-// 加载订单数量
-async function loadOrdersCount() {
-    try {
-        const token = localStorage.getItem('auth_token');
-        const response = await fetch('/api/orders', {
+        toggleDashboardLoading(true);
+        const query = buildDashboardSalesQuery();
+        const response = await fetch(`${apiBase}/api/dashboard/sales?${query}`, {
             headers: {
-                'Authorization': `Bearer ${token}`
+                'Authorization': `Bearer ${authToken}`
             }
         });
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
 
         const data = await response.json();
-        if (data.success) {
-            const ordersCount = data.data ? data.data.length : 0;
-            document.getElementById('totalOrders').textContent = ordersCount;
-        } else {
-            console.error('加载订单数量失败:', data.message);
-            document.getElementById('totalOrders').textContent = '0';
+        if (!data.success) {
+            throw new Error(data.message || '加载失败');
         }
+        if (requestSeq !== dashboardRequestSeq) {
+            return;
+        }
+
+        dashboardData.sales = data;
+        renderDashboardSummary(data.summary || {});
+        renderVerticalTrendChart('revenueTrendChart', data.revenue_trend || [], 'revenue', 'revenue');
+        renderVerticalTrendChart('profitTrendChart', data.profit_trend || [], 'profit', 'profit');
+        renderProductRanking(data.product_rankings || []);
+        renderAccountRanking(data.account_rankings || []);
     } catch (error) {
-        console.error('加载订单数量失败:', error);
-        document.getElementById('totalOrders').textContent = '0';
+        if (requestSeq !== dashboardRequestSeq) {
+            return;
+        }
+        console.error('加载销售仪表盘失败:', error);
+        showToast('加载销售仪表盘失败', 'danger');
+        setDashboardEmptyState();
+    } finally {
+        if (requestSeq === dashboardRequestSeq) {
+            toggleDashboardLoading(false);
+        }
     }
 }
 
-// 更新仪表盘统计数据
-function updateDashboardStats(totalAccounts, totalKeywords, enabledAccounts) {
-    document.getElementById('totalAccounts').textContent = totalAccounts;
-    document.getElementById('totalKeywords').textContent = totalKeywords;
-    document.getElementById('activeAccounts').textContent = enabledAccounts;
-}
-
-// 更新仪表盘账号列表
-function updateDashboardAccountsList(accounts) {
-    const tbody = document.getElementById('dashboardAccountsList');
-    tbody.innerHTML = '';
-
-    if (accounts.length === 0) {
-    tbody.innerHTML = `
-        <tr>
-        <td colspan="4" class="text-center text-muted py-4">
-            <i class="bi bi-inbox fs-1 d-block mb-2"></i>
-            暂无账号数据
-        </td>
-        </tr>
-    `;
-    return;
-    }
-
-    accounts.forEach(account => {
-    const keywordCount = account.keywordCount || 0;
-    const isEnabled = account.enabled === undefined ? true : account.enabled;
-
-    let status = '';
-    if (!isEnabled) {
-        status = '<span class="badge bg-danger">已禁用</span>';
-    } else if (keywordCount > 0) {
-        status = '<span class="badge bg-success">活跃</span>';
-    } else {
-        status = '<span class="badge bg-secondary">未配置</span>';
-    }
-
-    const row = document.createElement('tr');
-    row.className = isEnabled ? '' : 'table-secondary';
-    row.innerHTML = `
-        <td>
-        <strong class="text-primary ${!isEnabled ? 'text-muted' : ''}">${account.id}</strong>
-        ${!isEnabled ? '<i class="bi bi-pause-circle-fill text-danger ms-1" title="已禁用"></i>' : ''}
-        </td>
-        <td>
-        <span class="badge ${isEnabled ? 'bg-primary' : 'bg-secondary'}">${keywordCount} 个关键词</span>
-        </td>
-        <td>${status}</td>
-        <td>
-        <small class="text-muted">${new Date().toLocaleString()}</small>
-        </td>
-    `;
-    tbody.appendChild(row);
+function setDashboardEmptyState() {
+    renderDashboardSummary({
+        total_revenue: 0,
+        total_orders: 0,
+        account_count: 0,
+        inventory_card_count: 0
     });
+    renderVerticalTrendChart('revenueTrendChart', [], 'revenue', 'revenue');
+    renderVerticalTrendChart('profitTrendChart', [], 'profit', 'profit');
+    renderProductRanking([]);
+    renderAccountRanking([]);
+}
+
+function renderDashboardSummary(summary) {
+    setTextById('dashboardTotalRevenue', formatDashboardMoney(summary.total_revenue || 0));
+    setTextById('dashboardTotalOrders', formatDashboardCount(summary.total_orders || 0));
+    setTextById('dashboardTotalAccounts', formatDashboardCount(summary.account_count || 0));
+    setTextById('dashboardInventoryCards', formatDashboardCount(summary.inventory_card_count || 0));
+}
+
+function setTextById(id, value) {
+    const element = document.getElementById(id);
+    if (element) {
+        element.textContent = value;
+    }
+}
+
+function formatDashboardMoney(value) {
+    const numericValue = Number(value) || 0;
+    return `¥${numericValue.toLocaleString('zh-CN', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+    })}`;
+}
+
+function formatDashboardCount(value) {
+    return (Number(value) || 0).toLocaleString('zh-CN');
+}
+
+function escapeDashboardText(value) {
+    return String(value === undefined || value === null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function renderVerticalTrendChart(containerId, rows, valueKey, type) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+
+    if (!rows || rows.length === 0) {
+        container.innerHTML = '<div class="vertical-chart-empty">暂无数据</div>';
+        return;
+    }
+
+    const maxAbsValue = rows.reduce((maxValue, row) => {
+        const value = Math.abs(Number(row[valueKey]) || 0);
+        return Math.max(maxValue, value);
+    }, 0) || 1;
+
+    container.innerHTML = `
+        <div class="vertical-chart-bars">
+            ${rows.map(row => {
+                const value = Number(row[valueKey]) || 0;
+                const barHeight = Math.max(4, Math.round((Math.abs(value) / maxAbsValue) * 100));
+                const fillClass = type === 'profit' ? (value >= 0 ? 'profit' : 'loss') : 'revenue';
+                const label = escapeDashboardText(row.date_label || row.date || '-');
+                return `
+                    <div class="vertical-bar-item">
+                        <div class="vertical-bar-value">${formatDashboardMoney(value)}</div>
+                        <div class="vertical-bar-col">
+                            <div class="vertical-bar-fill ${fillClass}" style="height:${barHeight}%"></div>
+                        </div>
+                        <div class="vertical-bar-label" title="${label}">${label}</div>
+                    </div>
+                `;
+            }).join('')}
+        </div>
+    `;
+}
+
+function renderProductRanking(rows) {
+    renderRankingList('productSalesRanking', rows, {
+        labelKey: 'product_name',
+        showShare: true
+    });
+}
+
+function renderAccountRanking(rows) {
+    renderRankingList('accountSalesRanking', rows, {
+        labelKey: 'account_name',
+        showShare: false
+    });
+}
+
+function renderRankingList(containerId, rows, options) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+
+    if (!rows || rows.length === 0) {
+        container.innerHTML = '<div class="ranking-empty">暂无数据</div>';
+        return;
+    }
+
+    const maxQuantity = rows.reduce((maxValue, row) => {
+        return Math.max(maxValue, Number(row.quantity) || 0);
+    }, 0) || 1;
+
+    container.innerHTML = rows.slice(0, 10).map(row => {
+        const quantity = Number(row.quantity) || 0;
+        const amount = Number(row.amount) || 0;
+        const percentage = Number(row.percentage) || 0;
+        const fillWidth = Math.max(4, Math.round((quantity / maxQuantity) * 100));
+        const title = escapeDashboardText(row[options.labelKey] || '-');
+
+        return `
+            <div class="ranking-item">
+                <div class="ranking-head">
+                    <div class="ranking-name" title="${title}">${title}</div>
+                    <div class="ranking-meta">
+                        <span>数量 ${formatDashboardCount(quantity)}</span>
+                        <span>金额 ${formatDashboardMoney(amount)}</span>
+                    </div>
+                </div>
+                <div class="ranking-track">
+                    <div class="ranking-fill" style="width:${fillWidth}%"></div>
+                </div>
+                ${options.showShare ? `<div class="ranking-share mt-2">占比 ${percentage.toFixed(2)}%</div>` : ''}
+            </div>
+        `;
+    }).join('');
 }
 
 // 获取账号关键词数量（带缓存）- 包含普通关键词和商品关键词
@@ -3097,7 +3235,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     });
 
-    // 初始加载仪表盘
+    // 初始化并加载销售仪表盘
+    initDashboardFilters();
     loadDashboard();
 
     // 加载菜单设置并应用
@@ -5030,7 +5169,7 @@ function renderCardsList(cards) {
     if (cards.length === 0) {
     tbody.innerHTML = `
         <tr>
-        <td colspan="8" class="text-center py-4 text-muted">
+        <td colspan="9" class="text-center py-4 text-muted">
             <i class="bi bi-credit-card fs-1 d-block mb-3"></i>
             <h5>暂无卡券数据</h5>
             <p class="mb-0">点击"添加卡券"开始创建您的第一个卡券</p>
@@ -5087,6 +5226,11 @@ function renderCardsList(cards) {
     const delayDisplay = card.delay_seconds > 0 ?
         `${card.delay_seconds}秒` :
         '<span class="text-muted">立即</span>';
+    const costPrice = Number(card.cost_price || 0);
+    const costDisplay = `¥${costPrice.toLocaleString('zh-CN', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+    })}`;
 
     // 规格信息显示
     let specDisplay = '<span class="text-muted">普通卡券</span>';
@@ -5106,6 +5250,7 @@ function renderCardsList(cards) {
         <td>${typeBadge}</td>
         <td>${specDisplay}</td>
         <td>${dataCount}</td>
+        <td>${costDisplay}</td>
         <td>${delayDisplay}</td>
         <td>${statusBadge}</td>
         <td>
@@ -5527,6 +5672,7 @@ function clearAddCardForm() {
     setElementValue('cardType', 'text');
     setElementValue('cardDescription', '');
     setElementValue('cardDelaySeconds', '0');
+    setElementValue('cardCostPrice', '0');
     setElementValue('isMultiSpec', false);
     setElementValue('specName', '');
     setElementValue('specValue', '');
@@ -5587,12 +5733,14 @@ async function saveCard() {
         showToast('多规格卡券必须填写规格1名称和规格1值', 'warning');
         return;
     }
+    const cardCostPrice = parseFloat(document.getElementById('cardCostPrice').value);
 
     const cardData = {
         name: cardName,
         type: cardType,
         description: document.getElementById('cardDescription').value,
         delay_seconds: parseInt(document.getElementById('cardDelaySeconds').value) || 0,
+        cost_price: Number.isFinite(cardCostPrice) && cardCostPrice > 0 ? cardCostPrice : 0,
         enabled: true,
         is_multi_spec: isMultiSpec,
         spec_name: isMultiSpec ? specName : null,
@@ -6020,6 +6168,7 @@ async function editCard(cardId) {
         document.getElementById('editCardType').value = card.type;
         document.getElementById('editCardDescription').value = card.description || '';
         document.getElementById('editCardDelaySeconds').value = card.delay_seconds || 0;
+        document.getElementById('editCardCostPrice').value = Number(card.cost_price || 0).toFixed(2);
         document.getElementById('editCardEnabled').checked = card.enabled;
 
         // 填充多规格字段
@@ -6172,12 +6321,14 @@ async function updateCard() {
         showToast('多规格卡券必须填写规格1名称和规格1值', 'warning');
         return;
     }
+    const editCardCostPrice = parseFloat(document.getElementById('editCardCostPrice').value);
 
     const cardData = {
         name: cardName,
         type: cardType,
         description: document.getElementById('editCardDescription').value,
         delay_seconds: parseInt(document.getElementById('editCardDelaySeconds').value) || 0,
+        cost_price: Number.isFinite(editCardCostPrice) && editCardCostPrice > 0 ? editCardCostPrice : 0,
         enabled: document.getElementById('editCardEnabled').checked,
         is_multi_spec: isMultiSpec,
         spec_name: isMultiSpec ? specName : null,
