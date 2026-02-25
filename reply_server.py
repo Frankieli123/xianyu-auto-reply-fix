@@ -5729,10 +5729,29 @@ def create_card(card_data: dict, current_user: Dict[str, Any] = Depends(get_curr
         logger.info(f"[DEBUG] 创建卡券 - spec_value: {card_data.get('spec_value')}")
         logger.info(f"[DEBUG] 创建卡券 - spec_name_2: {card_data.get('spec_name_2')}")
         logger.info(f"[DEBUG] 创建卡券 - spec_value_2: {card_data.get('spec_value_2')}")
+        logger.info(f"[DEBUG] 创建卡券 - spec_values: {card_data.get('spec_values')}")
+
+        spec_values_raw = card_data.get('spec_values')
+        if isinstance(spec_values_raw, str):
+            try:
+                spec_values_raw = json.loads(spec_values_raw)
+            except (json.JSONDecodeError, TypeError):
+                spec_values_raw = [spec_values_raw]
+        if not isinstance(spec_values_raw, list):
+            spec_values_raw = []
+        spec_values = []
+        for value in spec_values_raw:
+            text = str(value or '').strip()
+            if text and text not in spec_values:
+                spec_values.append(text)
+        legacy_spec_value = str(card_data.get('spec_value') or '').strip()
+        if legacy_spec_value and legacy_spec_value not in spec_values:
+            spec_values.insert(0, legacy_spec_value)
+        primary_spec_value = spec_values[0] if spec_values else legacy_spec_value
 
         # 验证多规格字段
         if is_multi_spec:
-            if not card_data.get('spec_name') or not card_data.get('spec_value'):
+            if not card_data.get('spec_name') or not primary_spec_value:
                 raise HTTPException(status_code=400, detail="多规格卡券必须提供规格名称和规格值")
 
         card_id = db_manager.create_card(
@@ -5748,14 +5767,18 @@ def create_card(card_data: dict, current_user: Dict[str, Any] = Depends(get_curr
             cost_price=card_data.get('cost_price', 0),
             is_multi_spec=is_multi_spec,
             spec_name=card_data.get('spec_name') if is_multi_spec else None,
-            spec_value=card_data.get('spec_value') if is_multi_spec else None,
+            spec_value=primary_spec_value if is_multi_spec else None,
             spec_name_2=card_data.get('spec_name_2') if is_multi_spec else None,
             spec_value_2=card_data.get('spec_value_2') if is_multi_spec else None,
+            spec_values=spec_values if is_multi_spec else None,
             user_id=user_id
         )
 
         log_with_user('info', f"卡券创建成功: {card_name} (ID: {card_id})", current_user)
         return {"id": card_id, "message": "卡券创建成功"}
+    except HTTPException as e:
+        log_with_user('error', f"创建卡券失败: {card_data.get('name', '未知')} - {str(e.detail)}", current_user)
+        raise
     except Exception as e:
         log_with_user('error', f"创建卡券失败: {card_data.get('name', '未知')} - {str(e)}", current_user)
         raise HTTPException(status_code=500, detail=str(e))
@@ -5772,6 +5795,8 @@ def get_card(card_id: int, current_user: Dict[str, Any] = Depends(get_current_us
             return card
         else:
             raise HTTPException(status_code=404, detail="卡券不存在")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -5789,10 +5814,29 @@ def update_card(card_id: int, card_data: dict, current_user: Dict[str, Any] = De
         logger.info(f"[DEBUG] 更新卡券 {card_id} - spec_value: {card_data.get('spec_value')}")
         logger.info(f"[DEBUG] 更新卡券 {card_id} - spec_name_2: {card_data.get('spec_name_2')}")
         logger.info(f"[DEBUG] 更新卡券 {card_id} - spec_value_2: {card_data.get('spec_value_2')}")
+        logger.info(f"[DEBUG] 更新卡券 {card_id} - spec_values: {card_data.get('spec_values')}")
+
+        spec_values_raw = card_data.get('spec_values')
+        if isinstance(spec_values_raw, str):
+            try:
+                spec_values_raw = json.loads(spec_values_raw)
+            except (json.JSONDecodeError, TypeError):
+                spec_values_raw = [spec_values_raw]
+        if not isinstance(spec_values_raw, list):
+            spec_values_raw = []
+        spec_values = []
+        for value in spec_values_raw:
+            text = str(value or '').strip()
+            if text and text not in spec_values:
+                spec_values.append(text)
+        legacy_spec_value = str(card_data.get('spec_value') or '').strip()
+        if legacy_spec_value and legacy_spec_value not in spec_values:
+            spec_values.insert(0, legacy_spec_value)
+        primary_spec_value = spec_values[0] if spec_values else legacy_spec_value
 
         # 验证多规格字段
         if is_multi_spec:
-            if not card_data.get('spec_name') or not card_data.get('spec_value'):
+            if not card_data.get('spec_name') or not primary_spec_value:
                 raise HTTPException(status_code=400, detail="多规格卡券必须提供规格名称和规格值")
 
         success = db_manager.update_card(
@@ -5808,15 +5852,18 @@ def update_card(card_id: int, card_data: dict, current_user: Dict[str, Any] = De
             delay_seconds=card_data.get('delay_seconds'),
             cost_price=card_data.get('cost_price'),
             is_multi_spec=is_multi_spec,
-            spec_name=card_data.get('spec_name'),
-            spec_value=card_data.get('spec_value'),
-            spec_name_2=card_data.get('spec_name_2'),
-            spec_value_2=card_data.get('spec_value_2')
+            spec_name=card_data.get('spec_name') if is_multi_spec else None,
+            spec_value=primary_spec_value if is_multi_spec else None,
+            spec_name_2=card_data.get('spec_name_2') if is_multi_spec else None,
+            spec_value_2=card_data.get('spec_value_2') if is_multi_spec else None,
+            spec_values=spec_values if is_multi_spec else None
         )
         if success:
             return {"message": "卡券更新成功"}
         else:
             raise HTTPException(status_code=404, detail="卡券不存在")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -5834,6 +5881,7 @@ async def update_card_with_image(
     is_multi_spec: bool = Form(default=False),
     spec_name: str = Form(default=""),
     spec_value: str = Form(default=""),
+    spec_values: str = Form(default=""),
     spec_name_2: str = Form(default=""),
     spec_value_2: str = Form(default=""),
     current_user: Dict[str, Any] = Depends(get_current_user)
@@ -5848,8 +5896,25 @@ async def update_card_with_image(
             raise HTTPException(status_code=400, detail="请上传图片文件")
 
         # 验证多规格字段
+        parsed_spec_values = []
+        if spec_values:
+            try:
+                parsed_spec_values_raw = json.loads(spec_values)
+                if isinstance(parsed_spec_values_raw, list):
+                    for value in parsed_spec_values_raw:
+                        text = str(value or '').strip()
+                        if text and text not in parsed_spec_values:
+                            parsed_spec_values.append(text)
+            except (json.JSONDecodeError, TypeError):
+                text = str(spec_values or '').strip()
+                if text:
+                    parsed_spec_values.append(text)
+        if spec_value and spec_value not in parsed_spec_values:
+            parsed_spec_values.insert(0, spec_value)
+        primary_spec_value = parsed_spec_values[0] if parsed_spec_values else spec_value
+
         if is_multi_spec:
-            if not spec_name or not spec_value:
+            if not spec_name or not primary_spec_value:
                 raise HTTPException(status_code=400, detail="多规格卡券必须提供规格名称和规格值")
 
         # 读取图片数据
@@ -5877,9 +5942,10 @@ async def update_card_with_image(
             cost_price=cost_price,
             is_multi_spec=is_multi_spec,
             spec_name=spec_name if is_multi_spec else None,
-            spec_value=spec_value if is_multi_spec else None,
+            spec_value=primary_spec_value if is_multi_spec else None,
             spec_name_2=spec_name_2 if is_multi_spec else None,
-            spec_value_2=spec_value_2 if is_multi_spec else None
+            spec_value_2=spec_value_2 if is_multi_spec else None,
+            spec_values=parsed_spec_values if is_multi_spec else None
         )
 
         if success:
@@ -6395,6 +6461,15 @@ class BatchDeleteRequest(BaseModel):
     items: List[dict]  # [{"cookie_id": "xxx", "item_id": "yyy"}, ...]
 
 
+class SelectedItemRefreshIn(BaseModel):
+    cookie_id: str
+    item_id: str
+
+
+class BatchRefreshSelectedRequest(BaseModel):
+    items: List[SelectedItemRefreshIn]
+
+
 class AIReplySettings(BaseModel):
     ai_enabled: bool
     model_name: str = "qwen-plus"
@@ -6775,6 +6850,114 @@ async def get_all_items_from_account(request: dict, current_user: Dict[str, Any]
     except Exception as e:
         logger.error(f"获取账号商品信息异常: {str(e)}")
         return {"success": False, "message": f"获取商品信息异常: {str(e)}"}
+
+
+@app.post("/items/refresh-selected")
+async def refresh_selected_items(
+    request: BatchRefreshSelectedRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """批量刷新勾选商品（支持跨账号）"""
+    try:
+        if not request.items:
+            raise HTTPException(status_code=400, detail="刷新列表不能为空")
+
+        user_id = current_user['user_id']
+        user_cookies = set(db_manager.get_all_cookies(user_id).keys())
+
+        normalized_items = []
+        for item in request.items:
+            cookie_id = (item.cookie_id or '').strip()
+            item_id = (item.item_id or '').strip()
+            if not cookie_id or not item_id:
+                continue
+            normalized_items.append((cookie_id, item_id))
+
+        if not normalized_items:
+            raise HTTPException(status_code=400, detail="没有有效的商品可刷新")
+
+        grouped_by_cookie: Dict[str, set] = {}
+        for cookie_id, item_id in normalized_items:
+            grouped_by_cookie.setdefault(cookie_id, set()).add(item_id)
+
+        unauthorized = [cookie_id for cookie_id in grouped_by_cookie.keys() if cookie_id not in user_cookies]
+        if unauthorized:
+            raise HTTPException(status_code=403, detail=f"无权限操作以下账号: {', '.join(unauthorized)}")
+
+        from XianyuAutoAsync import XianyuLive
+
+        refreshed_account_count = 0
+        failed_accounts = []
+
+        for cookie_id in grouped_by_cookie.keys():
+            cookie_info = db_manager.get_cookie_by_id(cookie_id)
+            if not cookie_info:
+                failed_accounts.append({
+                    "cookie_id": cookie_id,
+                    "error": "账号不存在"
+                })
+                continue
+
+            cookies_str = cookie_info.get('cookies_str', '')
+            if not cookies_str:
+                failed_accounts.append({
+                    "cookie_id": cookie_id,
+                    "error": "账号cookies为空"
+                })
+                continue
+
+            xianyu_instance = None
+            try:
+                logger.info(f"开始批量刷新账号商品信息: {cookie_id}")
+                xianyu_instance = XianyuLive(cookies_str, cookie_id)
+                result = await xianyu_instance.get_all_items()
+
+                if result.get('success') and not result.get('error'):
+                    refreshed_account_count += 1
+                else:
+                    failed_accounts.append({
+                        "cookie_id": cookie_id,
+                        "error": result.get('error') or result.get('message') or "刷新失败"
+                    })
+            except Exception as account_error:
+                failed_accounts.append({
+                    "cookie_id": cookie_id,
+                    "error": str(account_error)
+                })
+            finally:
+                if xianyu_instance:
+                    try:
+                        await xianyu_instance.close_session()
+                    except Exception as close_error:
+                        logger.warning(f"关闭账号 {cookie_id} 会话失败: {close_error}")
+
+        selected_count = len(normalized_items)
+        account_count = len(grouped_by_cookie)
+        failed_account_count = len(failed_accounts)
+
+        success = refreshed_account_count > 0 and failed_account_count == 0
+        if failed_account_count == 0:
+            message = f"批量刷新完成，成功刷新 {refreshed_account_count}/{account_count} 个账号"
+        elif refreshed_account_count == 0:
+            message = "批量刷新失败，所有账号都未刷新成功"
+        else:
+            message = f"批量刷新部分成功，成功 {refreshed_account_count} 个账号，失败 {failed_account_count} 个账号"
+
+        return {
+            "success": success,
+            "message": message,
+            "selected_count": selected_count,
+            "account_count": account_count,
+            "refreshed_account_count": refreshed_account_count,
+            "failed_account_count": failed_account_count,
+            "failed_accounts": failed_accounts
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"批量刷新勾选商品异常: {e}")
+        raise HTTPException(status_code=500, detail=f"服务器错误: {str(e)}")
 
 
 @app.post("/items/get-by-page")
@@ -7966,7 +8149,6 @@ def get_dashboard_sales(
                 trend_orders.append(order)
 
         all_cards = db_manager.get_all_cards(user_id)
-        all_rules = db_manager.get_all_delivery_rules(user_id)
         card_cost_map = {card.get('id'): float(card.get('cost_price') or 0) for card in all_cards}
 
         inventory_card_count = 0
@@ -7981,106 +8163,105 @@ def get_dashboard_sales(
             remark = (cookie_detail.get('remark') or '').strip()
             cookie_name_map[cookie_id] = remark if remark else cookie_id
 
-        item_title_cache = {}
+        item_context_cache = {}
         for order in filtered_orders + trend_orders:
             cookie_id = order.get('cookie_id')
             item_id = order.get('item_id')
             cache_key = f"{cookie_id}:{item_id}"
-            if cache_key not in item_title_cache:
+            if cache_key not in item_context_cache:
                 title = item_id or '未知商品'
+                search_text = title
+                is_multi_spec = False
                 if cookie_id and item_id:
                     item_info = db_manager.get_item_info(cookie_id, item_id) or {}
-                    title = item_info.get('item_title') or item_id
-                item_title_cache[cache_key] = title
-            order['_item_title'] = item_title_cache.get(cache_key, item_id or '未知商品')
+                    item_title_db = (item_info.get('item_title') or '').strip()
+                    item_detail_db = (item_info.get('item_detail') or '').strip()
+                    title = item_title_db or item_id
+                    search_parts = []
+                    if item_title_db:
+                        search_parts.append(item_title_db)
+                    if item_detail_db:
+                        search_parts.append(item_detail_db)
+                    if search_parts:
+                        search_text = ' '.join(search_parts)
+                    elif title:
+                        search_text = title
+                    is_multi_spec = bool(item_info.get('is_multi_spec'))
+                item_context_cache[cache_key] = {
+                    'title': title or '未知商品',
+                    'search_text': search_text or title or item_id or '未知商品',
+                    'is_multi_spec': is_multi_spec
+                }
+            context = item_context_cache.get(cache_key, {})
+            order['_item_title'] = context.get('title') or item_id or '未知商品'
+            order['_search_text'] = context.get('search_text') or order['_item_title']
+            order['_item_is_multi_spec'] = bool(context.get('is_multi_spec'))
 
+        match_cache = {}
         def match_delivery_rule(order: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            cache_key = (
+                str(order.get('item_id') or '').strip(),
+                str(order.get('_search_text') or '').strip(),
+                bool(order.get('_item_is_multi_spec')),
+                str(order.get('spec_name') or '').strip(),
+                str(order.get('spec_value') or '').strip(),
+                str(order.get('spec_name_2') or '').strip(),
+                str(order.get('spec_value_2') or '').strip()
+            )
+            if cache_key in match_cache:
+                return match_cache[cache_key]
+
             item_title = (order.get('_item_title') or '').strip()
+            search_text = (order.get('_search_text') or '').strip()
             item_id = str(order.get('item_id') or '').strip()
             if not item_title and not item_id:
+                match_cache[cache_key] = None
                 return None
+            if not search_text:
+                search_text = item_title or item_id or '未知商品'
 
-            def keyword_matches(keyword: str) -> bool:
-                if not keyword:
-                    return False
-                return keyword in item_title or item_title in keyword
+            spec_name = ''
+            spec_value = ''
+            spec_name_2 = ''
+            spec_value_2 = ''
+            if bool(order.get('_item_is_multi_spec')):
+                spec_name = (order.get('spec_name') or '').strip()
+                spec_value = (order.get('spec_value') or '').strip()
+                spec_name_2 = (order.get('spec_name_2') or '').strip()
+                spec_value_2 = (order.get('spec_value_2') or '').strip()
 
-            matched_by_item_id = False
-            candidates = []
+            delivery_rules = []
 
-            if item_id:
-                candidates = [
-                    rule for rule in all_rules
-                    if str(rule.get('item_id') or '').strip() == item_id
-                ]
-                matched_by_item_id = bool(candidates)
-
-            if not candidates and item_title:
-                for rule in all_rules:
-                    rule_item_id = str(rule.get('item_id') or '').strip()
-                    if rule_item_id:
-                        continue
-                    keyword = str(rule.get('keyword') or '').strip()
-                    if not keyword:
-                        continue
-                    if not keyword_matches(keyword):
-                        continue
-                    candidates.append(rule)
-
-            if not candidates:
-                return None
-
-            spec_name = (order.get('spec_name') or '').strip()
-            spec_value = (order.get('spec_value') or '').strip()
-            spec_name_2 = (order.get('spec_name_2') or '').strip()
-            spec_value_2 = (order.get('spec_value_2') or '').strip()
-
-            if spec_name and spec_value:
-                strict_matches = []
-                for rule in candidates:
-                    if not rule.get('is_multi_spec'):
-                        continue
-                    if (rule.get('spec_name') or '').strip() != spec_name:
-                        continue
-                    if (rule.get('spec_value') or '').strip() != spec_value:
-                        continue
-                    rule_spec_name_2 = (rule.get('spec_name_2') or '').strip()
-                    rule_spec_value_2 = (rule.get('spec_value_2') or '').strip()
-                    if spec_name_2 and spec_value_2:
-                        if rule_spec_name_2 == spec_name_2 and rule_spec_value_2 == spec_value_2:
-                            strict_matches.append(rule)
-                    else:
-                        if not rule_spec_name_2 and not rule_spec_value_2:
-                            strict_matches.append(rule)
-
-                if strict_matches:
-                    candidates = strict_matches
-                else:
-                    normal_matches = [rule for rule in candidates if not rule.get('is_multi_spec')]
-                    if normal_matches:
-                        candidates = normal_matches
-            else:
-                normal_matches = [rule for rule in candidates if not rule.get('is_multi_spec')]
-                if normal_matches:
-                    candidates = normal_matches
-
-            if matched_by_item_id:
-                candidates.sort(
-                    key=lambda rule: (
-                        rule.get('delivery_times') or 0,
-                        rule.get('id') or 0
+            if item_id and item_id != "未知商品":
+                if spec_name and spec_value:
+                    delivery_rules = db_manager.get_delivery_rules_by_item_id_and_spec(
+                        item_id=item_id,
+                        spec_name=spec_name,
+                        spec_value=spec_value,
+                        spec_name_2=spec_name_2,
+                        spec_value_2=spec_value_2,
+                        user_id=user_id
                     )
+
+                if not delivery_rules:
+                    include_multi_spec_fallback = not (spec_name and spec_value)
+                    delivery_rules = db_manager.get_delivery_rules_by_item_id(
+                        item_id=item_id,
+                        user_id=user_id,
+                        include_multi_spec=include_multi_spec_fallback
+                    )
+
+            if not delivery_rules and spec_name and spec_value:
+                delivery_rules = db_manager.get_delivery_rules_by_keyword_and_spec(
+                    search_text, spec_name, spec_value, spec_name_2, spec_value_2, user_id=user_id
                 )
-            else:
-                candidates.sort(
-                    key=lambda rule: (
-                        1 if str(rule.get('keyword') or '') in item_title else 0,
-                        len(str(rule.get('keyword') or '')),
-                        -(rule.get('delivery_times') or 0)
-                    ),
-                    reverse=True
-                )
-            return candidates[0] if candidates else None
+
+            if not delivery_rules:
+                delivery_rules = db_manager.get_delivery_rules_by_keyword(search_text, user_id=user_id)
+
+            matched_rule = delivery_rules[0] if delivery_rules else None
+            match_cache[cache_key] = matched_rule
+            return matched_rule
 
         def calculate_order_profit(order: Dict[str, Any]) -> float:
             matched_rule = match_delivery_rule(order)
@@ -8238,10 +8419,19 @@ def get_user_orders(current_user: Dict[str, Any] = Depends(get_current_user)):
 
         # 获取所有订单数据
         all_orders = []
+        nick_cache: Dict[str, str] = {}
         for cookie_id in user_cookies.keys():
             orders = db_manager.get_orders_by_cookie(cookie_id, limit=1000)  # 增加限制数量
-            # 为每个订单添加cookie_id信息
             for order in orders:
+                buyer_nick = str(order.get('buyer_nick') or '').strip()
+                buyer_id = str(order.get('buyer_id') or '').strip()
+                if not buyer_nick and buyer_id:
+                    cache_key = f"{cookie_id}:{buyer_id}"
+                    if cache_key not in nick_cache:
+                        nick_cache[cache_key] = db_manager.get_latest_customer_service_peer_name(cookie_id, buyer_id)
+                    fallback_nick = nick_cache.get(cache_key, '')
+                    if fallback_nick:
+                        order['buyer_nick'] = fallback_nick
                 order['cookie_id'] = cookie_id
                 all_orders.append(order)
 

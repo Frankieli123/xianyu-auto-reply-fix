@@ -5252,12 +5252,16 @@ function renderCardsList(cards) {
 
     // 规格信息显示
     let specDisplay = '<span class="text-muted">普通卡券</span>';
-    if (card.is_multi_spec && card.spec_name && card.spec_value) {
-        let specInfo = `${card.spec_name}: ${card.spec_value}`;
-        if (card.spec_name_2 && card.spec_value_2) {
-            specInfo += `<br>${card.spec_name_2}: ${card.spec_value_2}`;
+    if (card.is_multi_spec && card.spec_name) {
+        const specValues = getCardSpecValues(card);
+        const specValueText = specValues.join(' / ');
+        if (specValueText) {
+            let specInfo = `${card.spec_name}: ${specValueText}`;
+            if (card.spec_name_2 && card.spec_value_2) {
+                specInfo += `<br>${card.spec_name_2}: ${card.spec_value_2}`;
+            }
+            specDisplay = `<span class="badge bg-primary">${specInfo}</span>`;
         }
-        specDisplay = `<span class="badge bg-primary">${specInfo}</span>`;
     }
 
     tr.innerHTML = `
@@ -5309,6 +5313,7 @@ function updateCardsStats(cards) {
 // 显示添加卡券模态框
 function showAddCardModal() {
     document.getElementById('addCardForm').reset();
+    renderSpecValueAliases([], false);
     toggleCardTypeFields();
     const modal = new bootstrap.Modal(document.getElementById('addCardModal'));
     modal.show();
@@ -5659,6 +5664,94 @@ function toggleEditMultiSpecFields() {
     console.log('toggleEditMultiSpecFields - 实际显示样式:', fieldsDiv.style.display);
 }
 
+function getCardSpecValues(card) {
+    const values = [];
+    const sourceValues = Array.isArray(card?.spec_values) ? card.spec_values : [];
+    sourceValues.forEach(value => {
+        const text = String(value || '').trim();
+        if (text && !values.includes(text)) {
+            values.push(text);
+        }
+    });
+    const legacyValue = String(card?.spec_value || '').trim();
+    if (legacyValue && !values.includes(legacyValue)) {
+        values.unshift(legacyValue);
+    }
+    return values;
+}
+
+function collectSpecValues(isEdit = false) {
+    const values = [];
+    const primaryInputId = isEdit ? 'editSpecValue' : 'specValue';
+    const aliasContainerId = isEdit ? 'editSpecValueAliasList' : 'specValueAliasList';
+    const primaryValue = (document.getElementById(primaryInputId)?.value || '').trim();
+    if (primaryValue) {
+        values.push(primaryValue);
+    }
+    const aliasInputs = document.querySelectorAll(`#${aliasContainerId} .spec-value-alias`);
+    aliasInputs.forEach(input => {
+        const text = (input.value || '').trim();
+        if (text && !values.includes(text)) {
+            values.push(text);
+        }
+    });
+    return values;
+}
+
+function addSpecValueAlias(isEdit = false, value = '') {
+    const aliasContainerId = isEdit ? 'editSpecValueAliasList' : 'specValueAliasList';
+    const container = document.getElementById(aliasContainerId);
+    if (!container) {
+        return;
+    }
+
+    const row = document.createElement('div');
+    row.className = 'input-group mt-2 spec-value-alias-row';
+    row.innerHTML = `
+        <input type="text" class="form-control spec-value-alias" placeholder="额外可匹配值，例如：美国">
+        <button type="button" class="btn btn-outline-danger" onclick="removeSpecValueAlias(this)" title="删除">
+            <i class="bi bi-x-lg"></i>
+        </button>
+    `;
+    const input = row.querySelector('input');
+    if (input) {
+        input.value = value;
+    }
+    container.appendChild(row);
+}
+
+function removeSpecValueAlias(button) {
+    const row = button?.closest('.spec-value-alias-row');
+    if (row) {
+        row.remove();
+    }
+}
+
+function renderSpecValueAliases(values, isEdit = false) {
+    const normalizedValues = [];
+    (Array.isArray(values) ? values : []).forEach(value => {
+        const text = String(value || '').trim();
+        if (text && !normalizedValues.includes(text)) {
+            normalizedValues.push(text);
+        }
+    });
+
+    const primaryInputId = isEdit ? 'editSpecValue' : 'specValue';
+    const aliasContainerId = isEdit ? 'editSpecValueAliasList' : 'specValueAliasList';
+    const primaryInput = document.getElementById(primaryInputId);
+    const container = document.getElementById(aliasContainerId);
+
+    if (primaryInput) {
+        primaryInput.value = normalizedValues[0] || '';
+    }
+    if (!container) {
+        return;
+    }
+
+    container.innerHTML = '';
+    normalizedValues.slice(1).forEach(value => addSpecValueAlias(isEdit, value));
+}
+
 // 清空添加卡券表单
 function clearAddCardForm() {
     try {
@@ -5696,6 +5789,7 @@ function clearAddCardForm() {
     setElementValue('specValue', '');
     setElementValue('specName2', '');
     setElementValue('specValue2', '');
+    renderSpecValueAliases([], false);
 
     // 隐藏多规格字段
     setElementDisplay('multiSpecFields', 'none');
@@ -5734,10 +5828,11 @@ async function saveCard() {
 
     // 检查多规格设置
     const isMultiSpec = document.getElementById('isMultiSpec').checked;
-    const specName = document.getElementById('specName').value;
-    const specValue = document.getElementById('specValue').value;
-    const specName2 = document.getElementById('specName2').value;
-    const specValue2 = document.getElementById('specValue2').value;
+    const specName = document.getElementById('specName').value.trim();
+    const specValues = collectSpecValues(false);
+    const specValue = specValues[0] || '';
+    const specName2 = document.getElementById('specName2').value.trim();
+    const specValue2 = document.getElementById('specValue2').value.trim();
 
     // 调试日志
     console.log('[DEBUG] 创建卡券 - isMultiSpec:', isMultiSpec);
@@ -5745,9 +5840,10 @@ async function saveCard() {
     console.log('[DEBUG] 创建卡券 - specValue:', specValue);
     console.log('[DEBUG] 创建卡券 - specName2:', specName2);
     console.log('[DEBUG] 创建卡券 - specValue2:', specValue2);
+    console.log('[DEBUG] 创建卡券 - specValues:', specValues);
 
     // 验证多规格字段
-    if (isMultiSpec && (!specName || !specValue)) {
+    if (isMultiSpec && (!specName || specValues.length === 0)) {
         showToast('多规格卡券必须填写规格1名称和规格1值', 'warning');
         return;
     }
@@ -5763,6 +5859,7 @@ async function saveCard() {
         is_multi_spec: isMultiSpec,
         spec_name: isMultiSpec ? specName : null,
         spec_value: isMultiSpec ? specValue : null,
+        spec_values: isMultiSpec ? specValues : null,
         spec_name_2: isMultiSpec ? specName2 : null,
         spec_value_2: isMultiSpec ? specValue2 : null
     };
@@ -5952,6 +6049,8 @@ function renderDeliveryRulesList(rules) {
     const tr = document.createElement('tr');
     const ruleKeyword = (rule.keyword || '').trim();
     const ruleItemId = (rule.item_id || '').trim();
+    const ruleSpecValues = getCardSpecValues(rule);
+    const ruleSpecValueText = ruleSpecValues.join(' / ');
 
     let conditionHtml = '';
     if (ruleItemId) {
@@ -5999,8 +6098,8 @@ function renderDeliveryRulesList(rules) {
         <td>
         <div>
             <span class="badge bg-primary">${rule.card_name || '未知卡券'}</span>
-            ${rule.is_multi_spec && rule.spec_name && rule.spec_value ?
-            `<br><small class="text-muted mt-1 d-block"><i class="bi bi-tags"></i> ${rule.spec_name}: ${rule.spec_value}${rule.spec_name_2 && rule.spec_value_2 ? `<br><i class="bi bi-tags"></i> ${rule.spec_name_2}: ${rule.spec_value_2}` : ''}</small>` :
+            ${rule.is_multi_spec && rule.spec_name && ruleSpecValueText ?
+            `<br><small class="text-muted mt-1 d-block"><i class="bi bi-tags"></i> ${rule.spec_name}: ${ruleSpecValueText}${rule.spec_name_2 && rule.spec_value_2 ? `<br><i class="bi bi-tags"></i> ${rule.spec_name_2}: ${rule.spec_value_2}` : ''}</small>` :
             ''}
         </div>
         </td>
@@ -6206,12 +6305,16 @@ async function loadCardsForSelect() {
             displayText += ` (${typeText})`;
 
             // 添加规格信息
-            if (card.is_multi_spec && card.spec_name && card.spec_value) {
-            let specInfo = `${card.spec_name}:${card.spec_value}`;
-            if (card.spec_name_2 && card.spec_value_2) {
-                specInfo += `, ${card.spec_name_2}:${card.spec_value_2}`;
+            if (card.is_multi_spec && card.spec_name) {
+            const specValues = getCardSpecValues(card);
+            const specValueText = specValues.join(' / ');
+            if (specValueText) {
+                let specInfo = `${card.spec_name}:${specValueText}`;
+                if (card.spec_name_2 && card.spec_value_2) {
+                    specInfo += `, ${card.spec_name_2}:${card.spec_value_2}`;
+                }
+                displayText += ` [${specInfo}]`;
             }
-            displayText += ` [${specInfo}]`;
             }
 
             option.textContent = displayText;
@@ -6380,7 +6483,7 @@ async function editCard(cardId) {
         const isMultiSpec = card.is_multi_spec || false;
         document.getElementById('editIsMultiSpec').checked = isMultiSpec;
         document.getElementById('editSpecName').value = card.spec_name || '';
-        document.getElementById('editSpecValue').value = card.spec_value || '';
+        renderSpecValueAliases(isMultiSpec ? getCardSpecValues(card) : [], true);
         document.getElementById('editSpecName2').value = card.spec_name_2 || '';
         document.getElementById('editSpecValue2').value = card.spec_value_2 || '';
 
@@ -6388,6 +6491,7 @@ async function editCard(cardId) {
         console.log('编辑卡券 - 多规格状态:', isMultiSpec);
         console.log('编辑卡券 - 规格1名称:', card.spec_name);
         console.log('编辑卡券 - 规格1值:', card.spec_value);
+        console.log('编辑卡券 - 规格1多值:', getCardSpecValues(card));
         console.log('编辑卡券 - 规格2名称:', card.spec_name_2);
         console.log('编辑卡券 - 规格2值:', card.spec_value_2);
 
@@ -6509,10 +6613,11 @@ async function updateCard() {
 
     // 检查多规格设置
     const isMultiSpec = document.getElementById('editIsMultiSpec').checked;
-    const specName = document.getElementById('editSpecName').value;
-    const specValue = document.getElementById('editSpecValue').value;
-    const specName2 = document.getElementById('editSpecName2').value;
-    const specValue2 = document.getElementById('editSpecValue2').value;
+    const specName = document.getElementById('editSpecName').value.trim();
+    const specValues = collectSpecValues(true);
+    const specValue = specValues[0] || '';
+    const specName2 = document.getElementById('editSpecName2').value.trim();
+    const specValue2 = document.getElementById('editSpecValue2').value.trim();
 
     // 调试日志
     console.log('[DEBUG] 更新卡券 - isMultiSpec:', isMultiSpec);
@@ -6520,9 +6625,10 @@ async function updateCard() {
     console.log('[DEBUG] 更新卡券 - specValue:', specValue);
     console.log('[DEBUG] 更新卡券 - specName2:', specName2);
     console.log('[DEBUG] 更新卡券 - specValue2:', specValue2);
+    console.log('[DEBUG] 更新卡券 - specValues:', specValues);
 
     // 验证多规格字段
-    if (isMultiSpec && (!specName || !specValue)) {
+    if (isMultiSpec && (!specName || specValues.length === 0)) {
         showToast('多规格卡券必须填写规格1名称和规格1值', 'warning');
         return;
     }
@@ -6538,6 +6644,7 @@ async function updateCard() {
         is_multi_spec: isMultiSpec,
         spec_name: isMultiSpec ? specName : null,
         spec_value: isMultiSpec ? specValue : null,
+        spec_values: isMultiSpec ? specValues : null,
         spec_name_2: isMultiSpec ? specName2 : null,
         spec_value_2: isMultiSpec ? specValue2 : null
     };
@@ -6810,12 +6917,16 @@ async function loadCardsForEditSelect() {
             displayText += ` (${typeText})`;
 
             // 添加规格信息
-            if (card.is_multi_spec && card.spec_name && card.spec_value) {
-            let specInfo = `${card.spec_name}:${card.spec_value}`;
-            if (card.spec_name_2 && card.spec_value_2) {
-                specInfo += `, ${card.spec_name_2}:${card.spec_value_2}`;
+            if (card.is_multi_spec && card.spec_name) {
+            const specValues = getCardSpecValues(card);
+            const specValueText = specValues.join(' / ');
+            if (specValueText) {
+                let specInfo = `${card.spec_name}:${specValueText}`;
+                if (card.spec_name_2 && card.spec_value_2) {
+                    specInfo += `, ${card.spec_name_2}:${card.spec_value_2}`;
+                }
+                displayText += ` [${specInfo}]`;
             }
-            displayText += ` [${specInfo}]`;
             }
 
             option.textContent = displayText;
@@ -8484,6 +8595,74 @@ function initItemsSearch() {
 
 // 刷新商品列表
 async function refreshItems() {
+    const selectedItemCheckboxes = document.querySelectorAll('#itemsTableBody input[name="itemCheckbox"]:checked');
+    if (selectedItemCheckboxes.length > 0) {
+        const uniqueItems = new Map();
+        selectedItemCheckboxes.forEach(checkbox => {
+            const cookieId = (checkbox.dataset.cookieId || '').trim();
+            const itemId = (checkbox.dataset.itemId || '').trim();
+            if (!cookieId || !itemId) return;
+            const key = `${cookieId}:${itemId}`;
+            uniqueItems.set(key, { cookie_id: cookieId, item_id: itemId });
+        });
+
+        const selectedItems = Array.from(uniqueItems.values());
+        if (selectedItems.length === 0) {
+            showToast('未找到有效的勾选商品', 'warning');
+            return;
+        }
+
+        const accountCount = new Set(selectedItems.map(item => item.cookie_id)).size;
+        const confirmed = confirm(
+            `确定要刷新勾选的 ${selectedItems.length} 个商品吗？\n\n` +
+            `涉及账号数：${accountCount}\n` +
+            `说明：将按账号同步商品数据（支持跨账号）。`
+        );
+        if (!confirmed) return;
+
+        const refreshBtn = document.querySelector('#items-section button[onclick="refreshItems()"]');
+        const originalBtnText = refreshBtn ? refreshBtn.innerHTML : '';
+        if (refreshBtn) {
+            refreshBtn.disabled = true;
+            refreshBtn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>刷新中...';
+        }
+
+        try {
+            const response = await fetch(`${apiBase}/items/refresh-selected`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${authToken}`
+                },
+                body: JSON.stringify({ items: selectedItems })
+            });
+
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(result.detail || result.message || '批量刷新失败');
+            }
+
+            await refreshItemsData();
+
+            const refreshedAccountCount = result.refreshed_account_count || 0;
+            const failedAccountCount = result.failed_account_count || 0;
+            if (failedAccountCount > 0) {
+                showToast(`批量刷新完成：成功账号 ${refreshedAccountCount}，失败账号 ${failedAccountCount}`, 'warning');
+            } else {
+                showToast(result.message || `已刷新 ${selectedItems.length} 个勾选商品`, 'success');
+            }
+        } catch (error) {
+            console.error('批量刷新勾选商品失败:', error);
+            showToast(`批量刷新失败: ${error.message || '未知错误'}`, 'danger');
+        } finally {
+            if (refreshBtn) {
+                refreshBtn.disabled = false;
+                refreshBtn.innerHTML = originalBtnText;
+            }
+        }
+        return;
+    }
+
     const cookieSelect = document.getElementById('itemCookieFilter');
     const selectedCookieId = cookieSelect ? cookieSelect.value : '';
 
@@ -11863,10 +12042,20 @@ async function loadOrdersByCookie() {
     }
 }
 
+function normalizeOrderStatus(status) {
+    const normalized = (status || '').toString().trim().toLowerCase();
+    const statusAlias = {
+        'pending_ship': 'pending_delivery',
+        'completed': 'success',
+        'cancelled': 'closed'
+    };
+    return statusAlias[normalized] || normalized;
+}
+
 // 筛选订单
 function filterOrders() {
     const searchKeyword = document.getElementById('orderSearchInput')?.value.toLowerCase() || '';
-    const statusFilter = document.getElementById('orderStatusFilter')?.value || '';
+    const statusFilter = normalizeOrderStatus(document.getElementById('orderStatusFilter')?.value || '');
 
     filteredOrdersData = allOrdersData.filter(order => {
         // 搜索关键词筛选（订单ID、商品ID、买家ID、买家昵称）
@@ -11877,7 +12066,8 @@ function filterOrders() {
             (order.buyer_nick && order.buyer_nick.toLowerCase().includes(searchKeyword));
 
         // 状态筛选
-        const matchesStatus = !statusFilter || order.order_status === statusFilter;
+        const orderStatus = normalizeOrderStatus(order.order_status);
+        const matchesStatus = !statusFilter || orderStatus === statusFilter;
 
         return matchesSearch && matchesStatus;
     });
@@ -11924,11 +12114,12 @@ function displayOrders() {
 
 // 创建订单行HTML
 function createOrderRow(order) {
-    const statusClass = getOrderStatusClass(order.order_status);
-    const statusText = getOrderStatusText(order.order_status);
+    const normalizedStatus = normalizeOrderStatus(order.order_status);
+    const statusClass = getOrderStatusClass(normalizedStatus);
+    const statusText = getOrderStatusText(normalizedStatus);
 
     // 判断是否可以手动发货（允许多次发货，除了交易关闭的订单）
-    const canDeliver = !['closed', 'refunded'].includes(order.order_status);
+    const canDeliver = !['closed', 'refunded'].includes(normalizedStatus);
 
     return `
         <tr>
@@ -11995,6 +12186,7 @@ function createOrderRow(order) {
 
 // 获取订单状态样式类
 function getOrderStatusClass(status) {
+    const normalizedStatus = normalizeOrderStatus(status);
     const statusMap = {
         'processing': 'bg-warning text-dark',
         'pending_payment': 'bg-warning text-dark',
@@ -12006,11 +12198,12 @@ function getOrderStatusClass(status) {
         'closed': 'bg-secondary text-white',
         'unknown': 'bg-secondary text-white'
     };
-    return statusMap[status] || 'bg-secondary text-white';
+    return statusMap[normalizedStatus] || 'bg-secondary text-white';
 }
 
 // 获取订单状态文本
 function getOrderStatusText(status) {
+    const normalizedStatus = normalizeOrderStatus(status);
     const statusMap = {
         'processing': '处理中',
         'pending_payment': '待付款',
@@ -12022,7 +12215,7 @@ function getOrderStatusText(status) {
         'closed': '交易关闭',
         'unknown': '未知'
     };
-    return statusMap[status] || status || '未知';
+    return statusMap[normalizedStatus] || normalizedStatus || '未知';
 }
 
 // 更新订单分页
@@ -17401,7 +17594,7 @@ function clearCustomerServiceImage() {
 async function sendCustomerServiceMessage(options = {}) {
     if (customerServiceState.isSending) return;
 
-    const { imageOnly = false, preserveText = false, silentSuccess = false, directImageUrl = '' } = options;
+    const { imageOnly = false, preserveText = false, silentSuccess = true, directImageUrl = '' } = options;
     const cookieId = customerServiceState.selectedCookieId;
     const chatId = customerServiceState.selectedChatId;
     const toUserId = customerServiceState.selectedPeerUserId;

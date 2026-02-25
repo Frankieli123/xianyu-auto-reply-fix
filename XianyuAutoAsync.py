@@ -5493,11 +5493,12 @@ Cookie数量: {cookie_count}
                             logger.warning(f"Cookie ID {self.cookie_id} 不存在于cookies表中，丢弃订单 {order_id}")
                         else:
                             # 先保存订单基本信息（包含sid和buyer_nick用于简化消息匹配）
+                            safe_buyer_nick = self._normalize_buyer_nick(buyer_nick)
                             success = db_manager.insert_or_update_order(
                                 order_id=order_id,
                                 item_id=item_id,
                                 buyer_id=buyer_id,
-                                buyer_nick=buyer_nick,  # 传递买家昵称
+                                buyer_nick=safe_buyer_nick,
                                 sid=sid,
                                 spec_name=spec_name,
                                 spec_value=spec_value,
@@ -5671,9 +5672,13 @@ Cookie数量: {cookie_count}
 
                 if not delivery_rules:
                     logger.info(f"尝试商品ID匹配普通规则: item_id={item_id}")
+                    include_multi_spec_fallback = not (spec_name and spec_value)
+                    if include_multi_spec_fallback:
+                        logger.info(f"订单缺少规格信息，商品ID兜底匹配将包含多规格卡券: item_id={item_id}")
                     delivery_rules = db_manager.get_delivery_rules_by_item_id(
                         item_id=item_id,
-                        user_id=self.user_id
+                        user_id=self.user_id,
+                        include_multi_spec=include_multi_spec_fallback
                     )
 
                 if delivery_rules:
@@ -5819,7 +5824,7 @@ Cookie数量: {cookie_count}
                                     order_id=order_id,
                                     item_id=item_id,
                                     buyer_id=send_user_id,
-                                    buyer_nick=send_user_name,
+                                    buyer_nick=self._normalize_buyer_nick(send_user_name),
                                     cookie_id=self.cookie_id
                                 )
 
@@ -6587,6 +6592,27 @@ Cookie数量: {cookie_count}
             pass
 
         return ""
+
+    def _normalize_buyer_nick(self, buyer_nick):
+        nick = str(buyer_nick or '').strip()
+        if not nick:
+            return None
+        system_keywords = ['待付款', '待发货', '已付款', '发货', '收货', '退款', '交易', '拍下', '付款', '确认', '成功', '关闭', '评价', '完成', '给ta']
+        if any(keyword in nick for keyword in system_keywords):
+            return None
+        if nick in ['未知用户', '买家']:
+            return None
+        return nick
+
+    def _update_order_buyer_nick(self, buyer_id: str, buyer_nick: str):
+        buyer_id_clean = str(buyer_id or '').split('@')[0].strip()
+        safe_nick = self._normalize_buyer_nick(buyer_nick)
+        if not buyer_id_clean or not safe_nick:
+            return
+        try:
+            db_manager.update_buyer_nick_by_buyer_id(buyer_id_clean, safe_nick, self.cookie_id)
+        except Exception as e:
+            logger.debug(f"更新买家昵称失败: {self._safe_str(e)}")
 
     def _record_customer_service_message(
         self,
@@ -8871,18 +8897,13 @@ Cookie数量: {cookie_count}
                                 if "10" in message_1 and isinstance(message_1["10"], dict):
                                     message_10 = message_1["10"]
                                     temp_user_id = message_10.get("senderUserId", "unknown_user")
-                                    # 提取买家昵称：优先使用senderNick，如果为空则尝试使用reminderTitle（需过滤系统提示）
-                                    temp_buyer_nick = message_10.get("senderNick")
+                                    # 提取买家昵称：优先使用senderNick，如果为空则尝试使用reminderTitle
+                                    temp_buyer_nick = self._normalize_buyer_nick(message_10.get("senderNick"))
                                     if not temp_buyer_nick:
-                                        # senderNick为空，尝试使用reminderTitle作为备选
                                         reminder_title = message_10.get("reminderTitle", "")
-                                        if reminder_title:
-                                            # 系统提示文本关键词列表（这些不是买家昵称）
-                                            system_keywords = ['待付款', '待发货', '已付款', '发货', '收货', '退款', '交易', '拍下', '付款', '确认', '成功', '关闭', '评价', '完成']
-                                            is_system_text = any(keyword in reminder_title for keyword in system_keywords)
-                                            if not is_system_text:
-                                                temp_buyer_nick = reminder_title
-                                                logger.info(f"【{self.cookie_id}】[{msg_id}] 👤 从reminderTitle提取到买家昵称: {temp_buyer_nick}")
+                                        temp_buyer_nick = self._normalize_buyer_nick(reminder_title)
+                                        if temp_buyer_nick:
+                                            logger.info(f"【{self.cookie_id}】[{msg_id}] 👤 从reminderTitle提取到买家昵称: {temp_buyer_nick}")
                                     if temp_buyer_nick:
                                         logger.info(f"【{self.cookie_id}】[{msg_id}] 👤 提取到买家昵称: {temp_buyer_nick}")
                                 else:
@@ -9160,6 +9181,7 @@ Cookie数量: {cookie_count}
                 return
             else:
                 logger.info(f"[{msg_time}] 【收到】用户: {send_user_name} (ID: {send_user_id}), 商品({item_id}): {send_message}")
+                self._update_order_buyer_nick(send_user_id, send_user_name)
 
                 # 【优先处理】检查是否正在等待亦凡卡劵账号输入
                 async with self.yifan_account_lock:
@@ -9460,19 +9482,6 @@ Cookie数量: {cookie_count}
                 except Exception as e:
                     logger.error(f"处理卡片消息异常: {self._safe_str(e)}")
                     # 如果处理异常，继续正常处理流程（会受到暂停影响）
-
-            # 自动更新买家昵称（补全历史订单的昵称信息）
-            # 需要过滤掉系统提示文本，避免将"买家已拍下，待付款"等写入昵称
-            if send_user_id and send_user_name:
-                # 检查是否为系统提示文本
-                system_keywords = ['待付款', '待发货', '已付款', '发货', '收货', '退款', '交易', '拍下', '付款', '确认', '成功', '关闭', '评价', '完成', '给ta']
-                is_system_text = any(keyword in send_user_name for keyword in system_keywords)
-                if not is_system_text:
-                    try:
-                        from db_manager import db_manager
-                        db_manager.update_buyer_nick_by_buyer_id(send_user_id, send_user_name, self.cookie_id)
-                    except Exception as e:
-                        logger.debug(f"更新买家昵称失败: {self._safe_str(e)}")
 
             # 使用防抖机制处理聊天消息回复
             # 如果用户连续发送消息，等待用户停止发送后再回复最后一条消息

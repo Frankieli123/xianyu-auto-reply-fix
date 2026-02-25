@@ -3548,8 +3548,15 @@
                 </div>
                 <div class="col-md-6">
                   <div class="mb-3">
-                    <label class="form-label">规格1值 <span class="text-danger">*</span></label>
+                    <label class="form-label d-flex justify-content-between align-items-center">
+                      <span>规格1值 <span class="text-danger">*</span></span>
+                      <button type="button" class="btn btn-sm btn-outline-primary" onclick="addSpecValueAlias(false)">
+                        <i class="bi bi-plus-lg"></i>
+                        添加值
+                      </button>
+                    </label>
                     <input type="text" class="form-control" id="specValue" placeholder="例如：30天、红色、XL">
+                    <div id="specValueAliasList" class="mt-2"></div>
                     <div class="form-text">规格1的具体值，如30天、红色等</div>
                   </div>
                 </div>
@@ -3896,8 +3903,15 @@
                 </div>
                 <div class="col-md-6">
                   <div class="mb-3">
-                    <label class="form-label">规格1值 <span class="text-danger">*</span></label>
+                    <label class="form-label d-flex justify-content-between align-items-center">
+                      <span>规格1值 <span class="text-danger">*</span></span>
+                      <button type="button" class="btn btn-sm btn-outline-primary" onclick="addSpecValueAlias(true)">
+                        <i class="bi bi-plus-lg"></i>
+                        添加值
+                      </button>
+                    </label>
                     <input type="text" class="form-control" id="editSpecValue" placeholder="例如：30天、红色、XL">
+                    <div id="editSpecValueAliasList" class="mt-2"></div>
                     <div class="form-text">规格1的具体值，如30天、红色等</div>
                   </div>
                 </div>

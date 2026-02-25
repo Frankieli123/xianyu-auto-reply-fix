@@ -242,6 +242,7 @@ class DBManager:
                 is_multi_spec BOOLEAN DEFAULT FALSE,
                 spec_name TEXT,
                 spec_value TEXT,
+                spec_values_json TEXT,
                 spec_name_2 TEXT,
                 spec_value_2 TEXT,
                 user_id INTEGER NOT NULL DEFAULT 1,
@@ -806,6 +807,7 @@ Cookie数量: {cookie_count}
                         is_multi_spec BOOLEAN DEFAULT FALSE,
                         spec_name TEXT,
                         spec_value TEXT,
+                        spec_values_json TEXT,
                         spec_name_2 TEXT,
                         spec_value_2 TEXT,
                         user_id INTEGER NOT NULL DEFAULT 1,
@@ -819,10 +821,10 @@ Cookie数量: {cookie_count}
                     cursor.execute('''
                     INSERT INTO cards_new (id, name, type, api_config, text_content, data_content, image_url,
                                           description, enabled, delay_seconds, is_multi_spec, spec_name, spec_value,
-                                          spec_name_2, spec_value_2, user_id, created_at, updated_at)
+                                          spec_values_json, spec_name_2, spec_value_2, user_id, created_at, updated_at)
                     SELECT id, name, type, api_config, text_content, data_content, image_url,
                            description, enabled, delay_seconds, is_multi_spec, spec_name, spec_value,
-                           NULL, NULL, user_id, created_at, updated_at
+                           NULL, NULL, NULL, user_id, created_at, updated_at
                     FROM cards
                     ''')
 
@@ -924,7 +926,6 @@ Cookie数量: {cookie_count}
 
             if current_version == "1.0":
                 logger.info("开始升级数据库到版本1.0...")
-                self.update_admin_user_id(cursor)
                 self.set_system_setting("db_version", "1.0", "数据库版本号")
                 logger.info("数据库升级到版本1.0完成")
             
@@ -977,6 +978,10 @@ Cookie数量: {cookie_count}
                 self.upgrade_users_table_for_admin(cursor)
                 self.set_system_setting("db_version", "1.7", "数据库版本号")
                 logger.info("数据库升级到版本1.7完成")
+
+            # 无论当前版本号是多少，都执行一次结构补齐与历史数据绑定
+            # 这里包含 cards/orders 等表的缺失列修复（例如 spec_values_json）
+            self.update_admin_user_id(cursor)
 
             # 迁移遗留数据（在所有版本升级完成后执行）
             self.migrate_legacy_data(cursor)
@@ -1110,6 +1115,13 @@ Cookie数量: {cookie_count}
                     self._execute_sql(cursor, "ALTER TABLE cards ADD COLUMN spec_name_2 TEXT")
                     self._execute_sql(cursor, "ALTER TABLE cards ADD COLUMN spec_value_2 TEXT")
                     logger.info("为cards表添加双规格字段(spec_name_2, spec_value_2)")
+
+                # 为cards表添加规格1多值字段（如果不存在）
+                try:
+                    self._execute_sql(cursor, "SELECT spec_values_json FROM cards LIMIT 1")
+                except sqlite3.OperationalError:
+                    self._execute_sql(cursor, "ALTER TABLE cards ADD COLUMN spec_values_json TEXT")
+                    logger.info("为cards表添加规格1多值字段(spec_values_json)")
 
                 # 为orders表添加双规格字段（如果不存在）
                 try:
@@ -1979,6 +1991,37 @@ Cookie数量: {cookie_count}
             except Exception as e:
                 logger.error(f"获取客服台消息失败: {e}")
                 return []
+
+    def get_latest_customer_service_peer_name(self, cookie_id: str, peer_user_id: str) -> str:
+        normalized_peer_id = self._normalize_chat_id(peer_user_id)
+        if not cookie_id or not normalized_peer_id:
+            return ''
+
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(
+                    cursor,
+                    '''
+                    SELECT peer_user_name
+                    FROM customer_service_messages
+                    WHERE runtime_id = ?
+                      AND cookie_id = ?
+                      AND peer_user_id = ?
+                      AND peer_user_name IS NOT NULL
+                      AND TRIM(peer_user_name) <> ''
+                    ORDER BY message_time DESC, id DESC
+                    LIMIT 1
+                    ''',
+                    (self.customer_service_runtime_id, cookie_id, normalized_peer_id)
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return ''
+                return str(row[0] or '').strip()
+            except Exception as e:
+                logger.error(f"获取客服台会话昵称失败: cookie_id={cookie_id}, peer_user_id={normalized_peer_id}, error={e}")
+                return ''
 
     def get_customer_service_order_info(
         self,
@@ -4345,12 +4388,68 @@ Cookie数量: {cookie_count}
 
     # ==================== 卡券管理方法 ====================
 
+    @staticmethod
+    def _normalize_spec_values(spec_value: str = None, spec_values: Any = None) -> List[str]:
+        values: List[str] = []
+
+        def append_value(raw_value: Any):
+            text = str(raw_value or '').strip()
+            if text and text not in values:
+                values.append(text)
+
+        if isinstance(spec_values, str):
+            spec_values_text = spec_values.strip()
+            if spec_values_text:
+                try:
+                    parsed = json.loads(spec_values_text)
+                    if isinstance(parsed, list):
+                        for value in parsed:
+                            append_value(value)
+                    else:
+                        append_value(spec_values_text)
+                except (json.JSONDecodeError, TypeError):
+                    append_value(spec_values_text)
+        elif isinstance(spec_values, (list, tuple, set)):
+            for value in spec_values:
+                append_value(value)
+        elif spec_values is not None:
+            append_value(spec_values)
+
+        append_value(spec_value)
+        return values
+
+    @staticmethod
+    def _decode_spec_values(spec_values_json: Any, spec_value: str = None) -> List[str]:
+        values: List[str] = []
+
+        if isinstance(spec_values_json, str):
+            payload = spec_values_json.strip()
+            if payload:
+                try:
+                    parsed = json.loads(payload)
+                    if isinstance(parsed, list):
+                        for value in parsed:
+                            text = str(value or '').strip()
+                            if text and text not in values:
+                                values.append(text)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        primary = str(spec_value or '').strip()
+        if primary:
+            if primary in values:
+                values.remove(primary)
+            values.insert(0, primary)
+
+        return values
+
     def create_card(self, name: str, card_type: str, api_config=None,
                    text_content: str = None, data_content: str = None, image_url: str = None,
                    description: str = None, enabled: bool = True, delay_seconds: int = 0,
                    cost_price: float = 0,
                    is_multi_spec: bool = False, spec_name: str = None, spec_value: str = None,
-                   spec_name_2: str = None, spec_value_2: str = None, user_id: int = None):
+                   spec_name_2: str = None, spec_value_2: str = None, spec_values: List[str] = None,
+                   user_id: int = None):
         """创建新卡券（支持双规格）"""
         # 调试日志
         logger.info(f"[DEBUG DB] create_card 被调用 - name: {name}")
@@ -4361,10 +4460,15 @@ Cookie数量: {cookie_count}
 
         with self.lock:
             try:
+                normalized_spec_values = self._normalize_spec_values(spec_value, spec_values)
+                if normalized_spec_values:
+                    spec_value = normalized_spec_values[0]
+                spec_values_json = json.dumps(normalized_spec_values, ensure_ascii=False) if normalized_spec_values else None
+
                 # 验证多规格参数
                 if is_multi_spec:
-                    if not spec_name or not spec_value:
-                        raise ValueError("多规格卡券必须提供规格名称和规格值")
+                    if not spec_name or not normalized_spec_values:
+                        raise ValueError("多规格卡券必须提供规格名称和规格1值")
 
                     # 检查唯一性：卡券名称+规格名称+规格值
                     cursor = self.conn.cursor()
@@ -4390,7 +4494,6 @@ Cookie数量: {cookie_count}
                 api_config_str = None
                 if api_config is not None:
                     if isinstance(api_config, dict):
-                        import json
                         api_config_str = json.dumps(api_config)
                     else:
                         api_config_str = str(api_config)
@@ -4398,11 +4501,11 @@ Cookie数量: {cookie_count}
                 cursor.execute('''
                 INSERT INTO cards (name, type, api_config, text_content, data_content, image_url,
                                  description, enabled, delay_seconds, cost_price, is_multi_spec,
-                                 spec_name, spec_value, spec_name_2, spec_value_2, user_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 spec_name, spec_value, spec_values_json, spec_name_2, spec_value_2, user_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (name, card_type, api_config_str, text_content, data_content, image_url,
                       description, enabled, delay_seconds, cost_price, is_multi_spec,
-                      spec_name, spec_value, spec_name_2, spec_value_2, user_id))
+                      spec_name, spec_value, spec_values_json, spec_name_2, spec_value_2, user_id))
                 self.conn.commit()
                 card_id = cursor.lastrowid
 
@@ -4424,7 +4527,7 @@ Cookie数量: {cookie_count}
                     cursor.execute('''
                     SELECT id, name, type, api_config, text_content, data_content, image_url,
                            description, enabled, delay_seconds, cost_price, is_multi_spec,
-                           spec_name, spec_value, spec_name_2, spec_value_2, created_at, updated_at
+                           spec_name, spec_value, spec_name_2, spec_value_2, created_at, updated_at, spec_values_json
                     FROM cards
                     WHERE user_id = ?
                     ORDER BY created_at DESC
@@ -4433,7 +4536,7 @@ Cookie数量: {cookie_count}
                     cursor.execute('''
                     SELECT id, name, type, api_config, text_content, data_content, image_url,
                            description, enabled, delay_seconds, cost_price, is_multi_spec,
-                           spec_name, spec_value, spec_name_2, spec_value_2, created_at, updated_at
+                           spec_name, spec_value, spec_name_2, spec_value_2, created_at, updated_at, spec_values_json
                     FROM cards
                     ORDER BY created_at DESC
                     ''')
@@ -4468,7 +4571,8 @@ Cookie数量: {cookie_count}
                         'spec_name_2': row[14],
                         'spec_value_2': row[15],
                         'created_at': row[16],
-                        'updated_at': row[17]
+                        'updated_at': row[17],
+                        'spec_values': self._decode_spec_values(row[18], row[13])
                     })
 
                 return cards
@@ -4485,14 +4589,14 @@ Cookie数量: {cookie_count}
                     cursor.execute('''
                     SELECT id, name, type, api_config, text_content, data_content, image_url,
                            description, enabled, delay_seconds, cost_price, is_multi_spec,
-                           spec_name, spec_value, spec_name_2, spec_value_2, created_at, updated_at
+                           spec_name, spec_value, spec_name_2, spec_value_2, created_at, updated_at, spec_values_json
                     FROM cards WHERE id = ? AND user_id = ?
                     ''', (card_id, user_id))
                 else:
                     cursor.execute('''
                     SELECT id, name, type, api_config, text_content, data_content, image_url,
                            description, enabled, delay_seconds, cost_price, is_multi_spec,
-                           spec_name, spec_value, spec_name_2, spec_value_2, created_at, updated_at
+                           spec_name, spec_value, spec_name_2, spec_value_2, created_at, updated_at, spec_values_json
                     FROM cards WHERE id = ?
                     ''', (card_id,))
 
@@ -4526,7 +4630,8 @@ Cookie数量: {cookie_count}
                         'spec_name_2': row[14],
                         'spec_value_2': row[15],
                         'created_at': row[16],
-                        'updated_at': row[17]
+                        'updated_at': row[17],
+                        'spec_values': self._decode_spec_values(row[18], row[13])
                     }
                 return None
             except Exception as e:
@@ -4537,7 +4642,8 @@ Cookie数量: {cookie_count}
                    api_config=None, text_content: str = None, data_content: str = None,
                    image_url: str = None, description: str = None, enabled: bool = None,
                    delay_seconds: int = None, cost_price: float = None, is_multi_spec: bool = None, spec_name: str = None,
-                   spec_value: str = None, spec_name_2: str = None, spec_value_2: str = None):
+                   spec_value: str = None, spec_name_2: str = None, spec_value_2: str = None,
+                   spec_values: List[str] = None):
         """更新卡券"""
         # 调试日志
         logger.info(f"[DEBUG DB] update_card 被调用 - card_id: {card_id}")
@@ -4545,14 +4651,20 @@ Cookie数量: {cookie_count}
         logger.info(f"[DEBUG DB] spec_name: {spec_name}, spec_value: {spec_value}")
         logger.info(f"[DEBUG DB] spec_name_2: {spec_name_2}, type: {type(spec_name_2)}")
         logger.info(f"[DEBUG DB] spec_value_2: {spec_value_2}, type: {type(spec_value_2)}")
+        logger.info(f"[DEBUG DB] spec_values: {spec_values}, type: {type(spec_values)}")
 
         with self.lock:
             try:
+                normalized_spec_values = None
+                if spec_values is not None or spec_value is not None:
+                    normalized_spec_values = self._normalize_spec_values(spec_value, spec_values)
+                    if normalized_spec_values:
+                        spec_value = normalized_spec_values[0]
+
                 # 处理api_config参数
                 api_config_str = None
                 if api_config is not None:
                     if isinstance(api_config, dict):
-                        import json
                         api_config_str = json.dumps(api_config)
                     else:
                         api_config_str = str(api_config)
@@ -4608,6 +4720,18 @@ Cookie数量: {cookie_count}
                 if spec_value_2 is not None:
                     update_fields.append("spec_value_2 = ?")
                     params.append(spec_value_2)
+                if spec_values is not None:
+                    update_fields.append("spec_values_json = ?")
+                    if normalized_spec_values:
+                        params.append(json.dumps(normalized_spec_values, ensure_ascii=False))
+                    else:
+                        params.append(None)
+                elif spec_value is not None:
+                    update_fields.append("spec_values_json = ?")
+                    if str(spec_value).strip():
+                        params.append(json.dumps([str(spec_value).strip()], ensure_ascii=False))
+                    else:
+                        params.append(None)
 
                 if not update_fields:
                     return True  # 没有需要更新的字段
@@ -4697,7 +4821,7 @@ Cookie数量: {cookie_count}
                            dr.description, dr.delivery_times, dr.created_at, dr.updated_at,
                            c.name as card_name, c.type as card_type,
                            c.is_multi_spec, c.spec_name, c.spec_value,
-                           c.spec_name_2, c.spec_value_2
+                           c.spec_name_2, c.spec_value_2, c.spec_values_json
                     FROM delivery_rules dr
                     LEFT JOIN cards c ON dr.card_id = c.id
                     WHERE dr.user_id = ?
@@ -4709,7 +4833,7 @@ Cookie数量: {cookie_count}
                            dr.description, dr.delivery_times, dr.created_at, dr.updated_at,
                            c.name as card_name, c.type as card_type,
                            c.is_multi_spec, c.spec_name, c.spec_value,
-                           c.spec_name_2, c.spec_value_2
+                           c.spec_name_2, c.spec_value_2, c.spec_values_json
                     FROM delivery_rules dr
                     LEFT JOIN cards c ON dr.card_id = c.id
                     ORDER BY dr.created_at DESC
@@ -4734,7 +4858,8 @@ Cookie数量: {cookie_count}
                         'spec_name': row[13],
                         'spec_value': row[14],
                         'spec_name_2': row[15],
-                        'spec_value_2': row[16]
+                        'spec_value_2': row[16],
+                        'spec_values': self._decode_spec_values(row[17], row[14])
                     })
 
                 return rules
@@ -4829,8 +4954,14 @@ Cookie数量: {cookie_count}
                 logger.error(f"根据关键字获取发货规则失败: {e}")
                 return []
 
-    def get_delivery_rules_by_item_id(self, item_id: str, user_id: int = None):
-        """根据商品ID获取匹配的发货规则（仅匹配非多规格卡券）"""
+    def get_delivery_rules_by_item_id(self, item_id: str, user_id: int = None, include_multi_spec: bool = False):
+        """根据商品ID获取匹配的发货规则
+
+        Args:
+            item_id: 商品ID
+            user_id: 用户ID
+            include_multi_spec: 是否包含多规格卡券（用于订单无规格信息时的兜底）
+        """
         with self.lock:
             try:
                 item_id = (item_id or '').strip()
@@ -4838,8 +4969,9 @@ Cookie数量: {cookie_count}
                     return []
 
                 cursor = self.conn.cursor()
+                multi_spec_clause = "" if include_multi_spec else "AND (c.is_multi_spec = 0 OR c.is_multi_spec IS NULL)"
                 if user_id is not None:
-                    cursor.execute('''
+                    cursor.execute(f'''
                     SELECT dr.id, dr.keyword, dr.item_id, dr.card_id, dr.delivery_count, dr.enabled,
                            dr.description, dr.delivery_times,
                            c.name as card_name, c.type as card_type, c.api_config,
@@ -4849,11 +4981,11 @@ Cookie数量: {cookie_count}
                     LEFT JOIN cards c ON dr.card_id = c.id
                     WHERE dr.enabled = 1 AND c.enabled = 1 AND dr.user_id = ?
                     AND dr.item_id = ?
-                    AND (c.is_multi_spec = 0 OR c.is_multi_spec IS NULL)
+                    {multi_spec_clause}
                     ORDER BY dr.delivery_times ASC, dr.id ASC
                     ''', (user_id, item_id))
                 else:
-                    cursor.execute('''
+                    cursor.execute(f'''
                     SELECT dr.id, dr.keyword, dr.item_id, dr.card_id, dr.delivery_count, dr.enabled,
                            dr.description, dr.delivery_times,
                            c.name as card_name, c.type as card_type, c.api_config,
@@ -4863,7 +4995,7 @@ Cookie数量: {cookie_count}
                     LEFT JOIN cards c ON dr.card_id = c.id
                     WHERE dr.enabled = 1 AND c.enabled = 1
                     AND dr.item_id = ?
-                    AND (c.is_multi_spec = 0 OR c.is_multi_spec IS NULL)
+                    {multi_spec_clause}
                     ORDER BY dr.delivery_times ASC, dr.id ASC
                     ''', (item_id,))
 
@@ -4922,16 +5054,16 @@ Cookie数量: {cookie_count}
                                c.name as card_name, c.type as card_type, c.api_config,
                                c.text_content, c.data_content, c.image_url, c.enabled as card_enabled,
                                c.description as card_description, c.delay_seconds as card_delay_seconds,
-                               c.is_multi_spec, c.spec_name, c.spec_value, c.spec_name_2, c.spec_value_2
+                               c.is_multi_spec, c.spec_name, c.spec_value, c.spec_name_2, c.spec_value_2, c.spec_values_json
                         FROM delivery_rules dr
                         LEFT JOIN cards c ON dr.card_id = c.id
                         WHERE dr.enabled = 1 AND c.enabled = 1 {user_filter}
                         AND dr.item_id = ?
-                        AND c.is_multi_spec = 1 AND c.spec_name = ? AND c.spec_value = ?
+                        AND c.is_multi_spec = 1 AND c.spec_name = ? AND (c.spec_value = ? OR c.spec_values_json LIKE '%"' || ? || '"%')
                         AND c.spec_name_2 = ? AND c.spec_value_2 = ?
                         ORDER BY dr.delivery_times ASC, dr.id ASC
                         '''
-                        params = [user_id, item_id, spec_name, spec_value, spec_name_2, spec_value_2] if user_id is not None else [item_id, spec_name, spec_value, spec_name_2, spec_value_2]
+                        params = [user_id, item_id, spec_name, spec_value, spec_value, spec_name_2, spec_value_2] if user_id is not None else [item_id, spec_name, spec_value, spec_value, spec_name_2, spec_value_2]
                     else:
                         sql = f'''
                         SELECT dr.id, dr.keyword, dr.item_id, dr.card_id, dr.delivery_count, dr.enabled,
@@ -4939,16 +5071,16 @@ Cookie数量: {cookie_count}
                                c.name as card_name, c.type as card_type, c.api_config,
                                c.text_content, c.data_content, c.image_url, c.enabled as card_enabled,
                                c.description as card_description, c.delay_seconds as card_delay_seconds,
-                               c.is_multi_spec, c.spec_name, c.spec_value, c.spec_name_2, c.spec_value_2
+                               c.is_multi_spec, c.spec_name, c.spec_value, c.spec_name_2, c.spec_value_2, c.spec_values_json
                         FROM delivery_rules dr
                         LEFT JOIN cards c ON dr.card_id = c.id
                         WHERE dr.enabled = 1 AND c.enabled = 1 {user_filter}
                         AND dr.item_id = ?
-                        AND c.is_multi_spec = 1 AND c.spec_name = ? AND c.spec_value = ?
+                        AND c.is_multi_spec = 1 AND c.spec_name = ? AND (c.spec_value = ? OR c.spec_values_json LIKE '%"' || ? || '"%')
                         AND (c.spec_name_2 IS NULL OR c.spec_name_2 = '')
                         ORDER BY dr.delivery_times ASC, dr.id ASC
                         '''
-                        params = [user_id, item_id, spec_name, spec_value] if user_id is not None else [item_id, spec_name, spec_value]
+                        params = [user_id, item_id, spec_name, spec_value, spec_value] if user_id is not None else [item_id, spec_name, spec_value, spec_value]
 
                     cursor.execute(sql, params)
 
@@ -4961,6 +5093,8 @@ Cookie数量: {cookie_count}
                                 api_config = json.loads(api_config)
                             except (json.JSONDecodeError, TypeError):
                                 pass
+
+                        rule_spec_values = self._decode_spec_values(row[22], row[19])
 
                         rules.append({
                             'id': row[0],
@@ -4984,7 +5118,8 @@ Cookie数量: {cookie_count}
                             'spec_name': row[18],
                             'spec_value': row[19],
                             'spec_name_2': row[20],
-                            'spec_value_2': row[21]
+                            'spec_value_2': row[21],
+                            'spec_values': rule_spec_values
                         })
 
                     if rules:
@@ -5007,7 +5142,7 @@ Cookie数量: {cookie_count}
                            dr.description, dr.delivery_times, dr.created_at, dr.updated_at,
                            c.name as card_name, c.type as card_type,
                            c.is_multi_spec, c.spec_name, c.spec_value,
-                           c.spec_name_2, c.spec_value_2
+                           c.spec_name_2, c.spec_value_2, c.spec_values_json
                     FROM delivery_rules dr
                     LEFT JOIN cards c ON dr.card_id = c.id
                     WHERE dr.id = ? AND dr.user_id = ?
@@ -5018,7 +5153,7 @@ Cookie数量: {cookie_count}
                            dr.description, dr.delivery_times, dr.created_at, dr.updated_at,
                            c.name as card_name, c.type as card_type,
                            c.is_multi_spec, c.spec_name, c.spec_value,
-                           c.spec_name_2, c.spec_value_2
+                           c.spec_name_2, c.spec_value_2, c.spec_values_json
                     FROM delivery_rules dr
                     LEFT JOIN cards c ON dr.card_id = c.id
                     WHERE dr.id = ?
@@ -5043,7 +5178,8 @@ Cookie数量: {cookie_count}
                         'spec_name': row[13],
                         'spec_value': row[14],
                         'spec_name_2': row[15],
-                        'spec_value_2': row[16]
+                        'spec_value_2': row[16],
+                        'spec_values': self._decode_spec_values(row[17], row[14])
                     }
                 return None
             except Exception as e:
@@ -5202,13 +5338,13 @@ Cookie数量: {cookie_count}
                                c.name as card_name, c.type as card_type, c.api_config,
                                c.text_content, c.data_content, c.enabled as card_enabled,
                                c.description as card_description, c.delay_seconds as card_delay_seconds,
-                               c.is_multi_spec, c.spec_name, c.spec_value, c.spec_name_2, c.spec_value_2
+                               c.is_multi_spec, c.spec_name, c.spec_value, c.spec_name_2, c.spec_value_2, c.spec_values_json
                         FROM delivery_rules dr
                         LEFT JOIN cards c ON dr.card_id = c.id
                         WHERE dr.enabled = 1 AND c.enabled = 1 {user_filter}
                         AND (dr.item_id IS NULL OR dr.item_id = '')
                         AND (? LIKE '%' || dr.keyword || '%' OR dr.keyword LIKE '%' || ? || '%')
-                        AND c.is_multi_spec = 1 AND c.spec_name = ? AND c.spec_value = ?
+                        AND c.is_multi_spec = 1 AND c.spec_name = ? AND (c.spec_value = ? OR c.spec_values_json LIKE '%"' || ? || '"%')
                         AND c.spec_name_2 = ? AND c.spec_value_2 = ?
                         ORDER BY
                             CASE
@@ -5217,7 +5353,7 @@ Cookie数量: {cookie_count}
                             END DESC,
                             dr.delivery_times ASC
                         '''
-                        params = [user_id, keyword, keyword, spec_name, spec_value, spec_name_2, spec_value_2, keyword] if user_id is not None else [keyword, keyword, spec_name, spec_value, spec_name_2, spec_value_2, keyword]
+                        params = [user_id, keyword, keyword, spec_name, spec_value, spec_value, spec_name_2, spec_value_2, keyword] if user_id is not None else [keyword, keyword, spec_name, spec_value, spec_value, spec_name_2, spec_value_2, keyword]
                         cursor.execute(sql, [p for p in params if p is not None or user_id is None])
                     else:
                         # 订单只有单规格，优先匹配只有单规格的卡券
@@ -5227,13 +5363,13 @@ Cookie数量: {cookie_count}
                                c.name as card_name, c.type as card_type, c.api_config,
                                c.text_content, c.data_content, c.enabled as card_enabled,
                                c.description as card_description, c.delay_seconds as card_delay_seconds,
-                               c.is_multi_spec, c.spec_name, c.spec_value, c.spec_name_2, c.spec_value_2
+                               c.is_multi_spec, c.spec_name, c.spec_value, c.spec_name_2, c.spec_value_2, c.spec_values_json
                         FROM delivery_rules dr
                         LEFT JOIN cards c ON dr.card_id = c.id
                         WHERE dr.enabled = 1 AND c.enabled = 1 {user_filter}
                         AND (dr.item_id IS NULL OR dr.item_id = '')
                         AND (? LIKE '%' || dr.keyword || '%' OR dr.keyword LIKE '%' || ? || '%')
-                        AND c.is_multi_spec = 1 AND c.spec_name = ? AND c.spec_value = ?
+                        AND c.is_multi_spec = 1 AND c.spec_name = ? AND (c.spec_value = ? OR c.spec_values_json LIKE '%"' || ? || '"%')
                         AND (c.spec_name_2 IS NULL OR c.spec_name_2 = '')
                         ORDER BY
                             CASE
@@ -5242,7 +5378,7 @@ Cookie数量: {cookie_count}
                             END DESC,
                             dr.delivery_times ASC
                         '''
-                        params = [user_id, keyword, keyword, spec_name, spec_value, keyword] if user_id is not None else [keyword, keyword, spec_name, spec_value, keyword]
+                        params = [user_id, keyword, keyword, spec_name, spec_value, spec_value, keyword] if user_id is not None else [keyword, keyword, spec_name, spec_value, spec_value, keyword]
                         cursor.execute(sql, [p for p in params if p is not None or user_id is None])
 
                     rules = []
@@ -5256,6 +5392,8 @@ Cookie数量: {cookie_count}
                             except (json.JSONDecodeError, TypeError):
                                 # 如果解析失败，保持原始字符串
                                 pass
+
+                        rule_spec_values = self._decode_spec_values(row[21], row[18])
 
                         rules.append({
                             'id': row[0],
@@ -5278,7 +5416,8 @@ Cookie数量: {cookie_count}
                             'spec_name': row[17],
                             'spec_value': row[18],
                             'spec_name_2': row[19],
-                            'spec_value_2': row[20]
+                            'spec_value_2': row[20],
+                            'spec_values': rule_spec_values
                         })
 
                     if rules:
@@ -5295,7 +5434,7 @@ Cookie数量: {cookie_count}
                        c.name as card_name, c.type as card_type, c.api_config,
                        c.text_content, c.data_content, c.enabled as card_enabled,
                        c.description as card_description, c.delay_seconds as card_delay_seconds,
-                       c.is_multi_spec, c.spec_name, c.spec_value, c.spec_name_2, c.spec_value_2
+                       c.is_multi_spec, c.spec_name, c.spec_value, c.spec_name_2, c.spec_value_2, c.spec_values_json
                 FROM delivery_rules dr
                 LEFT JOIN cards c ON dr.card_id = c.id
                 WHERE dr.enabled = 1 AND c.enabled = 1 {user_filter}
@@ -5347,7 +5486,8 @@ Cookie数量: {cookie_count}
                         'spec_name': row[17],
                         'spec_value': row[18],
                         'spec_name_2': row[19],
-                        'spec_value_2': row[20]
+                        'spec_value_2': row[20],
+                        'spec_values': self._decode_spec_values(row[21], row[18])
                     })
 
                 if rules:
