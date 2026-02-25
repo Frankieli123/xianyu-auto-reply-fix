@@ -126,8 +126,20 @@ function showSection(sectionName) {
             }
         }, 100);
         break;
+    case 'send-audit-logs': // 【发送审计菜单】
+        setTimeout(() => {
+            const sendAuditContainer = document.getElementById('sendAuditContainer');
+            if (sendAuditContainer) {
+                loadCustomerServiceSendAuditLogs(0);
+                loadSendAuditCookieFilterOptions();
+            }
+        }, 100);
+        break;
     case 'user-management':  // 【用户管理菜单】
         loadUserManagement();
+        break;
+    case 'customer-service': // 【客服台菜单】
+        loadCustomerService();
         break;
     case 'online-im':        // 【在线客服菜单】
         loadOnlineIm();
@@ -147,6 +159,10 @@ function showSection(sectionName) {
         button.textContent = '开启自动刷新';
         if (icon) icon.className = 'bi bi-play-circle me-1';
     }
+    }
+
+    if (sectionName !== 'customer-service') {
+        stopCustomerServicePolling();
     }
 }
 
@@ -6573,6 +6589,7 @@ const DEFAULT_MENU_ITEMS = [
     { id: 'auto-delivery', name: '自动发货', icon: 'bi-truck', required: false },
     { id: 'notification-channels', name: '通知渠道', icon: 'bi-bell', required: false },
     { id: 'message-notifications', name: '消息通知', icon: 'bi-chat-dots', required: false },
+    { id: 'customer-service', name: '客服台', icon: 'bi-chat-left-dots', required: false },
     { id: 'online-im', name: '在线客服', icon: 'bi-headset', required: false },
     { id: 'system-settings', name: '系统设置', icon: 'bi-gear', required: true },
     { id: 'about', name: '关于', icon: 'bi-info-circle', required: false }
@@ -10649,6 +10666,7 @@ async function loadSystemSettings() {
             const loginInfoSettings = document.getElementById('login-info-settings');
             const outgoingConfigs = document.getElementById('outgoing-configs');
             const backupManagement = document.getElementById('backup-management');
+            const csSendGuardSettings = document.getElementById('customer-service-send-guard-settings');
             const systemRestartBtn = document.getElementById('system-restart-btn');
 
             if (apiSecuritySettings) {
@@ -10663,6 +10681,9 @@ async function loadSystemSettings() {
             if (backupManagement) {
                 backupManagement.style.display = isAdmin ? 'block' : 'none';
             }
+            if (csSendGuardSettings) {
+                csSendGuardSettings.style.display = isAdmin ? 'flex' : 'none';
+            }
             if (systemRestartBtn) {
                 systemRestartBtn.style.display = isAdmin ? 'inline-block' : 'none';
             }
@@ -10673,14 +10694,19 @@ async function loadSystemSettings() {
                 await loadRegistrationSettings();
                 await loadLoginInfoSettings();
                 await loadOutgoingConfigs();
+                await loadCustomerServiceSendGuardSettings();
             }
         }
     } catch (error) {
         console.error('获取用户信息失败:', error);
         // 出错时隐藏管理员功能
         const loginInfoSettings = document.getElementById('login-info-settings');
+        const csSendGuardSettings = document.getElementById('customer-service-send-guard-settings');
         if (loginInfoSettings) {
             loginInfoSettings.style.display = 'none';
+        }
+        if (csSendGuardSettings) {
+            csSendGuardSettings.style.display = 'none';
         }
     }
 }
@@ -10707,6 +10733,126 @@ async function loadAPISecuritySettings() {
     } catch (error) {
         console.error('加载API安全设置失败:', error);
         showToast('加载API安全设置失败', 'danger');
+    }
+}
+
+let customerServiceSendGuardDefaults = null;
+
+function populateCustomerServiceSendGuardForm(config = {}) {
+    const minIntervalInput = document.getElementById('csGuardMinInterval');
+    const windowInput = document.getElementById('csGuardWindowSeconds');
+    const maxMessagesInput = document.getElementById('csGuardMaxMessages');
+    const duplicateBlockInput = document.getElementById('csGuardDuplicateBlock');
+    const maxLengthInput = document.getElementById('csGuardMaxMessageLength');
+
+    if (minIntervalInput) minIntervalInput.value = config.min_interval_seconds ?? '';
+    if (windowInput) windowInput.value = config.window_seconds ?? '';
+    if (maxMessagesInput) maxMessagesInput.value = config.max_messages_per_window ?? '';
+    if (duplicateBlockInput) duplicateBlockInput.value = config.duplicate_block_seconds ?? '';
+    if (maxLengthInput) maxLengthInput.value = config.max_message_length ?? '';
+}
+
+function showCustomerServiceSendGuardStatus(text, level = 'info') {
+    const statusEl = document.getElementById('csGuardStatus');
+    if (!statusEl) return;
+
+    statusEl.className = `alert alert-${level} mt-3 mb-0 py-2`;
+    statusEl.textContent = text;
+    statusEl.style.display = 'block';
+
+    setTimeout(() => {
+        statusEl.style.display = 'none';
+    }, 3000);
+}
+
+async function loadCustomerServiceSendGuardSettings() {
+    try {
+        const response = await fetch('/admin/customer-service/send-guard-config', {
+            headers: {
+                'Authorization': `Bearer ${authToken}`
+            }
+        });
+        if (!response.ok) return;
+
+        const result = await response.json();
+        if (!result.success) return;
+
+        customerServiceSendGuardDefaults = result.defaults || null;
+        populateCustomerServiceSendGuardForm(result.data || {});
+    } catch (error) {
+        console.error('加载客服发送风控配置失败:', error);
+    }
+}
+
+function readCustomerServiceSendGuardForm() {
+    const minInterval = parseFloat(document.getElementById('csGuardMinInterval')?.value || '');
+    const windowSeconds = parseInt(document.getElementById('csGuardWindowSeconds')?.value || '', 10);
+    const maxMessages = parseInt(document.getElementById('csGuardMaxMessages')?.value || '', 10);
+    const duplicateBlock = parseInt(document.getElementById('csGuardDuplicateBlock')?.value || '', 10);
+    const maxLength = parseInt(document.getElementById('csGuardMaxMessageLength')?.value || '', 10);
+
+    return {
+        min_interval_seconds: Number.isNaN(minInterval) ? null : minInterval,
+        window_seconds: Number.isNaN(windowSeconds) ? null : windowSeconds,
+        max_messages_per_window: Number.isNaN(maxMessages) ? null : maxMessages,
+        duplicate_block_seconds: Number.isNaN(duplicateBlock) ? null : duplicateBlock,
+        max_message_length: Number.isNaN(maxLength) ? null : maxLength
+    };
+}
+
+async function saveCustomerServiceSendGuardSettings() {
+    const payload = readCustomerServiceSendGuardForm();
+    const invalid = Object.values(payload).some(v => v === null);
+    if (invalid) {
+        showToast('请完整填写风控参数', 'warning');
+        return;
+    }
+
+    try {
+        const response = await fetch('/admin/customer-service/send-guard-config', {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${authToken}`
+            },
+            body: JSON.stringify(payload)
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.success) {
+            showToast(result.detail || result.message || '保存失败', 'danger');
+            return;
+        }
+        populateCustomerServiceSendGuardForm(result.data || payload);
+        showToast('客服发送风控配置已保存', 'success');
+        showCustomerServiceSendGuardStatus('风控配置保存成功', 'success');
+    } catch (error) {
+        console.error('保存客服发送风控配置失败:', error);
+        showToast('保存客服发送风控配置失败', 'danger');
+    }
+}
+
+async function resetCustomerServiceSendGuardSettings() {
+    if (!confirm('确定恢复客服发送风控为默认配置吗？')) return;
+    try {
+        const response = await fetch('/admin/customer-service/send-guard-config', {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${authToken}`
+            },
+            body: JSON.stringify({ use_defaults: true })
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.success) {
+            showToast(result.detail || result.message || '恢复默认失败', 'danger');
+            return;
+        }
+        populateCustomerServiceSendGuardForm(result.data || customerServiceSendGuardDefaults || {});
+        showToast('已恢复默认风控配置', 'success');
+        showCustomerServiceSendGuardStatus('已恢复默认配置', 'info');
+    } catch (error) {
+        console.error('恢复客服发送风控默认配置失败:', error);
+        showToast('恢复默认配置失败', 'danger');
     }
 }
 
@@ -13215,6 +13361,226 @@ async function clearRiskControlLogs() {
 }
 
 // ================================
+// 客服发送审计日志功能
+// ================================
+let currentSendAuditOffset = 0;
+
+async function loadSendAuditCookieFilterOptions() {
+    try {
+        const token = localStorage.getItem('auth_token');
+        const response = await fetch('/admin/cookies', {
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        if (!response.ok) return;
+        const data = await response.json();
+        const select = document.getElementById('sendAuditCookieFilter');
+        if (!select) return;
+
+        select.innerHTML = '<option value="">全部账号</option>';
+        if (data.success && Array.isArray(data.cookies)) {
+            data.cookies.forEach(cookie => {
+                const option = document.createElement('option');
+                option.value = cookie.cookie_id;
+                const displayName = cookie.nickname || cookie.username || '';
+                option.textContent = displayName ? `${cookie.cookie_id} (${displayName})` : cookie.cookie_id;
+                select.appendChild(option);
+            });
+        }
+    } catch (error) {
+        console.error('加载发送审计账号筛选失败:', error);
+    }
+}
+
+function getSendAuditStatusBadge(status) {
+    const value = (status || '').toLowerCase();
+    if (value === 'success') return '<span class="badge bg-success">成功</span>';
+    if (value === 'rejected') return '<span class="badge bg-warning text-dark">拦截</span>';
+    if (value === 'failed') return '<span class="badge bg-danger">失败</span>';
+    return '<span class="badge bg-secondary">未知</span>';
+}
+
+function getSendAuditTypeText(messageType) {
+    return messageType === 'image' ? '图片' : '文本';
+}
+
+async function loadCustomerServiceSendAuditLogs(offset = 0) {
+    const token = localStorage.getItem('auth_token');
+    const cookieId = document.getElementById('sendAuditCookieFilter')?.value || '';
+    const userId = document.getElementById('sendAuditUserIdFilter')?.value || '';
+    const messageType = document.getElementById('sendAuditTypeFilter')?.value || '';
+    const status = document.getElementById('sendAuditStatusFilter')?.value || '';
+    const limit = parseInt(document.getElementById('sendAuditLimit')?.value || '100', 10);
+
+    const loadingEl = document.getElementById('loadingSendAuditLogs');
+    const containerEl = document.getElementById('sendAuditContainer');
+    const noDataEl = document.getElementById('noSendAuditLogs');
+    const tableBody = document.getElementById('sendAuditTableBody');
+    if (!loadingEl || !containerEl || !noDataEl || !tableBody) return;
+
+    loadingEl.style.display = 'block';
+    containerEl.style.display = 'none';
+    noDataEl.style.display = 'none';
+
+    let url = `/admin/customer-service/send-audit-logs?limit=${limit}&offset=${offset}`;
+    if (cookieId) url += `&cookie_id=${encodeURIComponent(cookieId)}`;
+    if (userId) url += `&user_id=${encodeURIComponent(userId)}`;
+    if (messageType) url += `&message_type=${encodeURIComponent(messageType)}`;
+    if (status) url += `&status=${encodeURIComponent(status)}`;
+
+    try {
+        const response = await fetch(url, {
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        const result = await response.json().catch(() => ({}));
+        loadingEl.style.display = 'none';
+
+        if (!response.ok || !result.success) {
+            noDataEl.style.display = 'block';
+            showToast(result.detail || result.message || '加载发送审计日志失败', 'danger');
+            return;
+        }
+
+        const logs = result.data || [];
+        const total = Number(result.total || 0);
+        currentSendAuditOffset = offset;
+
+        if (!logs.length) {
+            noDataEl.style.display = 'block';
+            updateCustomerServiceSendAuditPagination(total, limit);
+            updateCustomerServiceSendAuditInfo(total, 0);
+            return;
+        }
+
+        tableBody.innerHTML = logs.map(log => `
+            <tr>
+                <td class="text-nowrap">${escapeHtml(formatDateTime(log.created_at))}</td>
+                <td>${escapeHtml(String(log.user_id || '-'))}</td>
+                <td class="text-nowrap">${escapeHtml(log.cookie_id || '-')}</td>
+                <td class="text-nowrap" title="${escapeHtml(log.chat_id || '-')}">${escapeHtml(log.chat_id || '-')}</td>
+                <td class="text-nowrap">${escapeHtml(log.to_user_id || '-')}</td>
+                <td>${escapeHtml(getSendAuditTypeText(log.message_type))}</td>
+                <td>${getSendAuditStatusBadge(log.status)}</td>
+                <td class="text-truncate" style="max-width: 240px;" title="${escapeHtml(log.message_preview || '-')}">${escapeHtml(log.message_preview || '-')}</td>
+                <td class="text-truncate" style="max-width: 220px;" title="${escapeHtml(log.error_detail || '-')}">${escapeHtml(log.error_detail || '-')}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-danger" onclick="deleteCustomerServiceSendAuditLog(${log.id})" title="删除">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+
+        containerEl.style.display = 'block';
+        updateCustomerServiceSendAuditInfo(total, logs.length);
+        updateCustomerServiceSendAuditPagination(total, limit);
+    } catch (error) {
+        console.error('加载发送审计日志失败:', error);
+        loadingEl.style.display = 'none';
+        noDataEl.style.display = 'block';
+        showToast('加载发送审计日志失败', 'danger');
+    }
+}
+
+function updateCustomerServiceSendAuditInfo(total, currentCount) {
+    const countEl = document.getElementById('sendAuditCount');
+    const infoEl = document.getElementById('sendAuditPaginationInfo');
+    if (countEl) countEl.textContent = `总计: ${total} 条`;
+    if (infoEl) {
+        const start = total > 0 ? currentSendAuditOffset + 1 : 0;
+        const end = total > 0 ? currentSendAuditOffset + currentCount : 0;
+        infoEl.textContent = `显示第 ${start}-${end} 条，共 ${total} 条记录`;
+    }
+}
+
+function updateCustomerServiceSendAuditPagination(total, limit) {
+    const pagination = document.getElementById('sendAuditPagination');
+    if (!pagination) return;
+
+    const totalPages = Math.ceil(total / limit);
+    const currentPage = Math.floor(currentSendAuditOffset / limit) + 1;
+    pagination.innerHTML = '';
+    if (totalPages <= 1) return;
+
+    const prevLi = document.createElement('li');
+    prevLi.className = `page-item ${currentPage === 1 ? 'disabled' : ''}`;
+    prevLi.innerHTML = `<a class="page-link" href="#" onclick="loadCustomerServiceSendAuditLogs(${(currentPage - 2) * limit}); return false;">上一页</a>`;
+    pagination.appendChild(prevLi);
+
+    const startPage = Math.max(1, currentPage - 2);
+    const endPage = Math.min(totalPages, currentPage + 2);
+    for (let i = startPage; i <= endPage; i++) {
+        const li = document.createElement('li');
+        li.className = `page-item ${i === currentPage ? 'active' : ''}`;
+        li.innerHTML = `<a class="page-link" href="#" onclick="loadCustomerServiceSendAuditLogs(${(i - 1) * limit}); return false;">${i}</a>`;
+        pagination.appendChild(li);
+    }
+
+    const nextLi = document.createElement('li');
+    nextLi.className = `page-item ${currentPage === totalPages ? 'disabled' : ''}`;
+    nextLi.innerHTML = `<a class="page-link" href="#" onclick="loadCustomerServiceSendAuditLogs(${currentPage * limit}); return false;">下一页</a>`;
+    pagination.appendChild(nextLi);
+}
+
+async function deleteCustomerServiceSendAuditLog(logId) {
+    if (!confirm('确定删除这条发送审计日志吗？')) return;
+    try {
+        const token = localStorage.getItem('auth_token');
+        const response = await fetch(`/admin/customer-service/send-audit-logs/${logId}`, {
+            method: 'DELETE',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.success) {
+            showToast(result.detail || result.message || '删除失败', 'danger');
+            return;
+        }
+        showToast('删除成功', 'success');
+        loadCustomerServiceSendAuditLogs(currentSendAuditOffset);
+    } catch (error) {
+        console.error('删除发送审计日志失败:', error);
+        showToast('删除发送审计日志失败', 'danger');
+    }
+}
+
+async function clearCustomerServiceSendAuditLogs() {
+    if (!confirm('确定清空当前筛选条件下的发送审计日志吗？')) return;
+    const cookieId = document.getElementById('sendAuditCookieFilter')?.value || '';
+    const userId = document.getElementById('sendAuditUserIdFilter')?.value || '';
+
+    let url = '/admin/customer-service/send-audit-logs';
+    const query = [];
+    if (cookieId) query.push(`cookie_id=${encodeURIComponent(cookieId)}`);
+    if (userId) query.push(`user_id=${encodeURIComponent(userId)}`);
+    if (query.length) url += `?${query.join('&')}`;
+
+    try {
+        const token = localStorage.getItem('auth_token');
+        const response = await fetch(url, {
+            method: 'DELETE',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.success) {
+            showToast(result.detail || result.message || '清空失败', 'danger');
+            return;
+        }
+        showToast(result.message || '清空成功', 'success');
+        loadCustomerServiceSendAuditLogs(0);
+    } catch (error) {
+        console.error('清空发送审计日志失败:', error);
+        showToast('清空发送审计日志失败', 'danger');
+    }
+}
+
+// ================================
 // 商品搜索功能
 // ================================
 let searchResultsData = [];
@@ -15288,6 +15654,1471 @@ hotUpdateStyle.textContent = `
 `;
 document.head.appendChild(hotUpdateStyle);
 
+// ==================== 客服台功能 ====================
+
+const CUSTOMER_SERVICE_STARRED_STORAGE_KEY = 'customer_service_starred_conversations_v1';
+const CUSTOMER_SERVICE_TEMPLATE_STORAGE_KEY = 'customer_service_templates_v1';
+const CUSTOMER_SERVICE_IMAGE_LIBRARY_STORAGE_KEY = 'customer_service_image_library_v1';
+const CUSTOMER_SERVICE_LEGACY_QUICK_REPLY_STORAGE_KEY = 'customer_service_quick_replies_v1';
+const CUSTOMER_SERVICE_GROUP_WINDOW_MS = 3 * 60 * 1000;
+const CUSTOMER_SERVICE_INPUT_MAX_HEIGHT = 180;
+const CUSTOMER_SERVICE_MAX_TEMPLATE_COUNT = 50;
+const CUSTOMER_SERVICE_MAX_IMAGE_LIBRARY_COUNT = 200;
+
+const customerServiceState = {
+    initialized: false,
+    pollingTimer: null,
+    pollingIntervalMs: 5000,
+    accounts: [],
+    selectedCookieId: '',
+    selectedChatId: '',
+    selectedPeerUserId: '',
+    selectedPeerUserName: '',
+    selectedImageFile: null,
+    isSending: false,
+    mobileView: 'list',
+    mobileOrderDrawerOpen: false,
+    viewportBound: false,
+    starredConversationKeys: new Set(),
+    templates: [],
+    imageLibrary: [],
+    imageLibraryUploading: false,
+    templateEditingIndex: -1,
+    templateEditingOriginal: '',
+    slashMenuVisible: false,
+    slashMatches: [],
+    slashActiveIndex: 0,
+    slashContext: null,
+    documentClickBound: false
+};
+
+function getCustomerServiceConversationKey(cookieId, chatId) {
+    return `${encodeURIComponent(String(cookieId || ''))}::${encodeURIComponent(String(chatId || ''))}`;
+}
+
+function isCustomerServiceConversationStarred(cookieId, chatId) {
+    return customerServiceState.starredConversationKeys.has(getCustomerServiceConversationKey(cookieId, chatId));
+}
+
+function saveCustomerServiceStarredConversations() {
+    try {
+        const values = Array.from(customerServiceState.starredConversationKeys);
+        localStorage.setItem(CUSTOMER_SERVICE_STARRED_STORAGE_KEY, JSON.stringify(values));
+    } catch (error) {
+        console.warn('保存客服台星标会话失败:', error);
+    }
+}
+
+function normalizeCustomerServiceTemplates(value) {
+    if (!Array.isArray(value)) return [];
+    const normalized = [];
+    for (const item of value) {
+        const contentRaw = typeof item === 'string'
+            ? String(item || '').trim()
+            : String(item?.content || '').trim();
+        if (!contentRaw) continue;
+        const content = contentRaw.slice(0, 2000);
+        if (normalized.includes(content)) continue;
+        normalized.push(content);
+        if (normalized.length >= CUSTOMER_SERVICE_MAX_TEMPLATE_COUNT) break;
+    }
+    return normalized;
+}
+
+function saveCustomerServiceTemplates() {
+    try {
+        localStorage.setItem(CUSTOMER_SERVICE_TEMPLATE_STORAGE_KEY, JSON.stringify(customerServiceState.templates));
+    } catch (error) {
+        console.warn('保存客服台模板失败:', error);
+    }
+}
+
+function normalizeCustomerServiceImageLibrary(value) {
+    if (!Array.isArray(value)) return [];
+    const normalized = [];
+    const seen = new Set();
+    for (const item of value) {
+        const imageUrlRaw = typeof item === 'string'
+            ? String(item || '').trim()
+            : String(item?.image_url || item?.url || '').trim();
+        if (!imageUrlRaw) continue;
+        const key = imageUrlRaw.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        normalized.push({
+            image_url: imageUrlRaw,
+            name: String(item?.name || '').trim().slice(0, 120),
+            created_at: Number(item?.created_at || item?.createdAt || Date.now())
+        });
+        if (normalized.length >= CUSTOMER_SERVICE_MAX_IMAGE_LIBRARY_COUNT) break;
+    }
+    return normalized;
+}
+
+function saveCustomerServiceImageLibrary() {
+    try {
+        localStorage.setItem(CUSTOMER_SERVICE_IMAGE_LIBRARY_STORAGE_KEY, JSON.stringify(customerServiceState.imageLibrary));
+    } catch (error) {
+        console.warn('保存客服台图片库失败:', error);
+    }
+}
+
+function loadCustomerServiceLocalSettings() {
+    try {
+        const starredRaw = localStorage.getItem(CUSTOMER_SERVICE_STARRED_STORAGE_KEY);
+        if (starredRaw) {
+            const parsed = JSON.parse(starredRaw);
+            if (Array.isArray(parsed)) {
+                customerServiceState.starredConversationKeys = new Set(parsed.map(item => String(item || '')).filter(Boolean));
+            }
+        }
+    } catch (error) {
+        console.warn('读取客服台星标会话失败:', error);
+        customerServiceState.starredConversationKeys = new Set();
+    }
+
+    customerServiceState.templates = [];
+    try {
+        const templateRaw = localStorage.getItem(CUSTOMER_SERVICE_TEMPLATE_STORAGE_KEY);
+        if (templateRaw) {
+            const parsed = JSON.parse(templateRaw);
+            customerServiceState.templates = normalizeCustomerServiceTemplates(parsed);
+        }
+        if (!customerServiceState.templates.length) {
+            const legacyRaw = localStorage.getItem(CUSTOMER_SERVICE_LEGACY_QUICK_REPLY_STORAGE_KEY);
+            if (legacyRaw) {
+                const legacyParsed = JSON.parse(legacyRaw);
+                customerServiceState.templates = normalizeCustomerServiceTemplates(legacyParsed);
+                if (customerServiceState.templates.length) {
+                    saveCustomerServiceTemplates();
+                }
+            }
+        }
+    } catch (error) {
+        console.warn('读取客服台模板失败:', error);
+        customerServiceState.templates = [];
+    }
+
+    customerServiceState.imageLibrary = [];
+    try {
+        const imageLibraryRaw = localStorage.getItem(CUSTOMER_SERVICE_IMAGE_LIBRARY_STORAGE_KEY);
+        if (imageLibraryRaw) {
+            const parsed = JSON.parse(imageLibraryRaw);
+            customerServiceState.imageLibrary = normalizeCustomerServiceImageLibrary(parsed);
+        }
+    } catch (error) {
+        console.warn('读取客服台图片库失败:', error);
+        customerServiceState.imageLibrary = [];
+    }
+}
+
+function escapeCustomerServiceHtml(text) {
+    if (text === null || text === undefined) return '';
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function formatCustomerServiceTime(timestamp) {
+    if (!timestamp) return '-';
+    const date = new Date(Number(timestamp));
+    if (Number.isNaN(date.getTime())) return '-';
+    const now = new Date();
+    const sameDay =
+        date.getFullYear() === now.getFullYear() &&
+        date.getMonth() === now.getMonth() &&
+        date.getDate() === now.getDate();
+    if (sameDay) {
+        return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+    }
+    return `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+function formatCustomerServiceFullTime(timestamp) {
+    if (!timestamp) return '-';
+    const date = new Date(Number(timestamp));
+    if (Number.isNaN(date.getTime())) return '-';
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}`;
+}
+
+function formatCustomerServiceImageLibraryTime(timestamp) {
+    if (!timestamp) return '-';
+    const date = new Date(Number(timestamp));
+    if (Number.isNaN(date.getTime())) return '-';
+    return `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+function getCustomerServiceSelectedConversation() {
+    if (!customerServiceState.selectedCookieId || !customerServiceState.selectedChatId) {
+        return null;
+    }
+    for (const account of customerServiceState.accounts) {
+        if (account.id !== customerServiceState.selectedCookieId) continue;
+        const match = (account.conversations || []).find(
+            conv => String(conv.chat_id) === String(customerServiceState.selectedChatId)
+        );
+        if (match) return match;
+    }
+    return null;
+}
+
+function getCustomerServiceConversationStatus(conversation) {
+    const lastDirection = String(conversation?.last_message_direction || 'in').toLowerCase();
+    return lastDirection === 'out' ? 'replied' : 'pending';
+}
+
+function isCustomerServiceMobile() {
+    return window.matchMedia('(max-width: 768px)').matches;
+}
+
+function applyCustomerServiceMobileLayout() {
+    const section = document.getElementById('customer-service-section');
+    const layout = section?.querySelector('.customer-service-layout');
+    const overlay = document.getElementById('csMobileOrderOverlay');
+    if (!layout) return;
+
+    const mobile = isCustomerServiceMobile();
+    const sectionActive = section?.classList.contains('active');
+    layout.classList.toggle('cs-mobile-mode', mobile);
+
+    if (!mobile) {
+        customerServiceState.mobileView = 'chat';
+        customerServiceState.mobileOrderDrawerOpen = false;
+    }
+    if (mobile && customerServiceState.mobileView !== 'chat') {
+        customerServiceState.mobileOrderDrawerOpen = false;
+    }
+
+    const showList = mobile && customerServiceState.mobileView === 'list';
+    const showChat = mobile && customerServiceState.mobileView === 'chat';
+    const orderOpen = mobile && showChat && customerServiceState.mobileOrderDrawerOpen && sectionActive;
+
+    layout.classList.toggle('cs-mobile-show-list', showList);
+    layout.classList.toggle('cs-mobile-show-chat', showChat);
+    layout.classList.toggle('cs-mobile-order-open', orderOpen);
+
+    if (overlay) {
+        overlay.classList.toggle('show', orderOpen);
+    }
+    document.body.classList.toggle('cs-mobile-order-lock', orderOpen);
+}
+
+function handleCustomerServiceViewportChange() {
+    if (isCustomerServiceMobile()) {
+        if (!customerServiceState.selectedCookieId || !customerServiceState.selectedChatId) {
+            customerServiceState.mobileView = 'list';
+        } else if (!customerServiceState.mobileView) {
+            customerServiceState.mobileView = 'chat';
+        }
+    } else {
+        customerServiceState.mobileView = 'chat';
+        customerServiceState.mobileOrderDrawerOpen = false;
+    }
+    applyCustomerServiceMobileLayout();
+    renderCustomerServiceConversationHeader();
+}
+
+function backToCustomerServiceConversationList() {
+    if (!isCustomerServiceMobile()) return;
+    customerServiceState.mobileView = 'list';
+    customerServiceState.mobileOrderDrawerOpen = false;
+    applyCustomerServiceMobileLayout();
+}
+
+function openCustomerServiceOrderDrawer() {
+    if (!isCustomerServiceMobile()) return;
+    if (!customerServiceState.selectedCookieId || !customerServiceState.selectedChatId) return;
+    customerServiceState.mobileOrderDrawerOpen = true;
+    applyCustomerServiceMobileLayout();
+}
+
+function closeCustomerServiceOrderDrawer() {
+    customerServiceState.mobileOrderDrawerOpen = false;
+    applyCustomerServiceMobileLayout();
+}
+
+function renderCustomerServiceQuickReplies() {
+    // 模板入口已移动到“图片”按钮旁，保留兼容函数。
+}
+
+function renderCustomerServiceTemplateManagerList() {
+    const container = document.getElementById('csTemplateManagerList');
+    if (!container) return;
+    if (!customerServiceState.templates.length) {
+        container.innerHTML = '<div class="text-muted small">暂无模板，点击上方“新增模板”。</div>';
+        return;
+    }
+
+    container.innerHTML = customerServiceState.templates.map((content, index) => {
+        const isEditing = customerServiceState.templateEditingIndex === index;
+        if (isEditing) {
+            return `
+                <div class="cs-template-manager-item editing">
+                    <button
+                        type="button"
+                        class="cs-template-delete-btn"
+                        title="删除"
+                        onmousedown="event.preventDefault()"
+                        onclick="deleteCustomerServiceTemplate(event, ${index})"
+                    >
+                        <i class="bi bi-x-lg"></i>
+                    </button>
+                    <input
+                        id="csTemplateInlineInput-${index}"
+                        type="text"
+                        class="cs-template-inline-input"
+                        value="${escapeCustomerServiceHtml(content)}"
+                        onkeydown="handleCustomerServiceTemplateInlineKeydown(event, ${index})"
+                        onblur="saveCustomerServiceTemplateInlineEdit(${index})"
+                    >
+                </div>
+            `;
+        }
+        return `
+            <div
+                class="cs-template-manager-item"
+                title="${escapeCustomerServiceHtml(content)}"
+                ondblclick="startEditCustomerServiceTemplate(${index})"
+            >
+                <button
+                    type="button"
+                    class="cs-template-delete-btn"
+                    title="删除"
+                    onmousedown="event.preventDefault()"
+                    onclick="deleteCustomerServiceTemplate(event, ${index})"
+                >
+                    <i class="bi bi-x-lg"></i>
+                </button>
+                <div class="cs-template-manager-text">${escapeCustomerServiceHtml(content)}</div>
+            </div>
+        `;
+    }).join('');
+}
+
+function openCustomerServiceTemplateManager() {
+    hideCustomerServiceSlashMenu();
+    customerServiceState.templateEditingIndex = -1;
+    customerServiceState.templateEditingOriginal = '';
+    let modalEl = document.getElementById('csTemplateManagerModal');
+    if (modalEl) {
+        modalEl.remove();
+    }
+    modalEl = document.createElement('div');
+    modalEl.id = 'csTemplateManagerModal';
+    modalEl.className = 'modal fade';
+    modalEl.tabIndex = -1;
+    modalEl.innerHTML = `
+        <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">模板</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <div class="text-muted small">双击编辑，右上角删除</div>
+                        <button type="button" class="btn btn-sm btn-primary" onclick="addCustomerServiceTemplate()">
+                            <i class="bi bi-plus-lg me-1"></i>新增模板
+                        </button>
+                    </div>
+                    <div id="csTemplateManagerList"></div>
+                </div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modalEl);
+    renderCustomerServiceTemplateManagerList();
+    const modal = new bootstrap.Modal(modalEl);
+    modal.show();
+    modalEl.addEventListener('hidden.bs.modal', () => modalEl.remove(), { once: true });
+}
+
+function addCustomerServiceTemplate() {
+    if (customerServiceState.templates.length >= CUSTOMER_SERVICE_MAX_TEMPLATE_COUNT) {
+        showToast(`模板最多 ${CUSTOMER_SERVICE_MAX_TEMPLATE_COUNT} 个`, 'warning');
+        return;
+    }
+    customerServiceState.templates.push('');
+    customerServiceState.templateEditingIndex = customerServiceState.templates.length - 1;
+    customerServiceState.templateEditingOriginal = '';
+    renderCustomerServiceTemplateManagerList();
+    focusCustomerServiceTemplateInlineInput(customerServiceState.templateEditingIndex);
+}
+
+function focusCustomerServiceTemplateInlineInput(index) {
+    setTimeout(() => {
+        const input = document.getElementById(`csTemplateInlineInput-${index}`);
+        if (!input) return;
+        input.focus();
+        input.select();
+    }, 0);
+}
+
+function startEditCustomerServiceTemplate(index) {
+    const current = customerServiceState.templates[index];
+    if (current === undefined) return;
+    customerServiceState.templateEditingIndex = index;
+    customerServiceState.templateEditingOriginal = current;
+    renderCustomerServiceTemplateManagerList();
+    focusCustomerServiceTemplateInlineInput(index);
+}
+
+function cancelCustomerServiceTemplateInlineEdit() {
+    if (customerServiceState.templateEditingIndex < 0) return;
+    const index = customerServiceState.templateEditingIndex;
+    const original = customerServiceState.templateEditingOriginal;
+    if (customerServiceState.templates[index] !== undefined) {
+        customerServiceState.templates[index] = original;
+    }
+    customerServiceState.templateEditingIndex = -1;
+    customerServiceState.templateEditingOriginal = '';
+    if (!original && customerServiceState.templates[index] === '') {
+        customerServiceState.templates.splice(index, 1);
+    }
+    saveCustomerServiceTemplates();
+    renderCustomerServiceTemplateManagerList();
+}
+
+function saveCustomerServiceTemplateInlineEdit(index) {
+    if (customerServiceState.templateEditingIndex !== index) return;
+    const input = document.getElementById(`csTemplateInlineInput-${index}`);
+    if (!input) return;
+    const value = String(input.value || '').trim().slice(0, 2000);
+    const original = customerServiceState.templateEditingOriginal || '';
+
+    if (!value) {
+        if (original) {
+            customerServiceState.templates[index] = original;
+        } else {
+            customerServiceState.templates.splice(index, 1);
+        }
+        customerServiceState.templateEditingIndex = -1;
+        customerServiceState.templateEditingOriginal = '';
+        saveCustomerServiceTemplates();
+        renderCustomerServiceTemplateManagerList();
+        return;
+    }
+
+    const duplicated = customerServiceState.templates.some((item, i) => i !== index && item === value);
+    if (duplicated) {
+        showToast('模板内容已存在', 'warning');
+        focusCustomerServiceTemplateInlineInput(index);
+        return;
+    }
+
+    customerServiceState.templates[index] = value;
+    customerServiceState.templateEditingIndex = -1;
+    customerServiceState.templateEditingOriginal = '';
+    saveCustomerServiceTemplates();
+    renderCustomerServiceTemplateManagerList();
+}
+
+function handleCustomerServiceTemplateInlineKeydown(event, index) {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        saveCustomerServiceTemplateInlineEdit(index);
+        return;
+    }
+    if (event.key === 'Escape') {
+        event.preventDefault();
+        cancelCustomerServiceTemplateInlineEdit();
+    }
+}
+
+function deleteCustomerServiceTemplate(event, index) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+    if (customerServiceState.templates[index] === undefined) return;
+    customerServiceState.templates.splice(index, 1);
+    if (customerServiceState.templateEditingIndex === index) {
+        customerServiceState.templateEditingIndex = -1;
+        customerServiceState.templateEditingOriginal = '';
+    } else if (customerServiceState.templateEditingIndex > index) {
+        customerServiceState.templateEditingIndex -= 1;
+    }
+    saveCustomerServiceTemplates();
+    renderCustomerServiceTemplateManagerList();
+}
+
+function getCustomerServiceSlashContext(input) {
+    if (!input) return null;
+    const cursor = input.selectionStart ?? 0;
+    const text = input.value || '';
+    const before = text.slice(0, cursor);
+    const slashIndex = before.lastIndexOf('/');
+    if (slashIndex < 0) return null;
+    if (slashIndex > 0 && /\S/.test(before[slashIndex - 1])) return null;
+    const query = before.slice(slashIndex + 1);
+    if (/[\s]/.test(query)) return null;
+    return { start: slashIndex, end: cursor, query };
+}
+
+function hideCustomerServiceSlashMenu() {
+    const menu = document.getElementById('csTemplateSlashMenu');
+    if (menu) {
+        menu.classList.remove('show');
+        menu.innerHTML = '';
+    }
+    customerServiceState.slashMenuVisible = false;
+    customerServiceState.slashMatches = [];
+    customerServiceState.slashActiveIndex = 0;
+    customerServiceState.slashContext = null;
+}
+
+function renderCustomerServiceSlashMenu() {
+    const menu = document.getElementById('csTemplateSlashMenu');
+    if (!menu) return;
+    if (!customerServiceState.slashMenuVisible || !customerServiceState.slashMatches.length) {
+        hideCustomerServiceSlashMenu();
+        return;
+    }
+    menu.innerHTML = customerServiceState.slashMatches.map((content, idx) => `
+        <button
+            type="button"
+            class="cs-template-slash-item ${idx === customerServiceState.slashActiveIndex ? 'active' : ''}"
+            onclick="applyCustomerServiceSlashTemplate(${idx})"
+            title="${escapeCustomerServiceHtml(content)}"
+        >
+            ${escapeCustomerServiceHtml(content)}
+        </button>
+    `).join('');
+    menu.classList.add('show');
+}
+
+function refreshCustomerServiceSlashMenu() {
+    const input = document.getElementById('csMessageInput');
+    if (!input || !customerServiceState.templates.length) {
+        hideCustomerServiceSlashMenu();
+        return;
+    }
+    const context = getCustomerServiceSlashContext(input);
+    if (!context) {
+        hideCustomerServiceSlashMenu();
+        return;
+    }
+
+    const query = context.query.trim().toLowerCase();
+    const matches = customerServiceState.templates.filter(content => {
+        if (!query) return true;
+        return content.toLowerCase().includes(query);
+    }).slice(0, 8);
+    if (!matches.length) {
+        hideCustomerServiceSlashMenu();
+        return;
+    }
+
+    customerServiceState.slashMenuVisible = true;
+    customerServiceState.slashMatches = matches;
+    customerServiceState.slashContext = context;
+    if (customerServiceState.slashActiveIndex >= matches.length) {
+        customerServiceState.slashActiveIndex = 0;
+    }
+    renderCustomerServiceSlashMenu();
+}
+
+function handleCustomerServiceComposerInput() {
+    resizeCustomerServiceInput();
+    refreshCustomerServiceSlashMenu();
+}
+
+function applyCustomerServiceTemplateFromModal(index) {
+    const content = customerServiceState.templates[index];
+    const input = document.getElementById('csMessageInput');
+    if (!content || !input) return;
+
+    const current = input.value || '';
+    const separator = current && !current.endsWith('\n') ? '\n' : '';
+    input.value = `${current}${separator}${content}`;
+    resizeCustomerServiceInput();
+    input.focus();
+    const length = input.value.length;
+    input.setSelectionRange(length, length);
+
+    const modalEl = document.getElementById('csTemplateManagerModal');
+    const modal = modalEl ? bootstrap.Modal.getInstance(modalEl) : null;
+    if (modal) {
+        modal.hide();
+    }
+}
+
+function applyCustomerServiceSlashTemplate(index) {
+    const input = document.getElementById('csMessageInput');
+    const context = customerServiceState.slashContext;
+    const content = customerServiceState.slashMatches[index];
+    if (!input || !context || !content) return;
+
+    const text = input.value || '';
+    const before = text.slice(0, context.start);
+    const after = text.slice(context.end);
+    input.value = `${before}${content}${after}`;
+    const cursor = (before + content).length;
+    input.focus();
+    input.setSelectionRange(cursor, cursor);
+    resizeCustomerServiceInput();
+    hideCustomerServiceSlashMenu();
+}
+
+function moveCustomerServiceSlashSelection(delta) {
+    if (!customerServiceState.slashMenuVisible || !customerServiceState.slashMatches.length) return;
+    const total = customerServiceState.slashMatches.length;
+    customerServiceState.slashActiveIndex = (customerServiceState.slashActiveIndex + delta + total) % total;
+    renderCustomerServiceSlashMenu();
+}
+
+function resizeCustomerServiceInput(forceReset = false) {
+    const input = document.getElementById('csMessageInput');
+    if (!input) return;
+
+    if (forceReset && !input.value.trim()) {
+        input.style.height = '';
+        input.style.overflowY = 'hidden';
+        return;
+    }
+
+    input.style.height = 'auto';
+    const nextHeight = Math.max(72, Math.min(input.scrollHeight, CUSTOMER_SERVICE_INPUT_MAX_HEIGHT));
+    input.style.height = `${nextHeight}px`;
+    input.style.overflowY = input.scrollHeight > CUSTOMER_SERVICE_INPUT_MAX_HEIGHT ? 'auto' : 'hidden';
+}
+
+function handleCustomerServiceComposerKeydown(event) {
+    if (event.isComposing || event.keyCode === 229) return;
+    if (customerServiceState.slashMenuVisible) {
+        if (event.key === 'ArrowDown') {
+            event.preventDefault();
+            moveCustomerServiceSlashSelection(1);
+            return;
+        }
+        if (event.key === 'ArrowUp') {
+            event.preventDefault();
+            moveCustomerServiceSlashSelection(-1);
+            return;
+        }
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            hideCustomerServiceSlashMenu();
+            return;
+        }
+        if (
+            event.key === 'Enter' &&
+            !event.shiftKey &&
+            !event.ctrlKey &&
+            !event.metaKey &&
+            !event.altKey
+        ) {
+            event.preventDefault();
+            applyCustomerServiceSlashTemplate(customerServiceState.slashActiveIndex || 0);
+            return;
+        }
+    }
+    if (event.key !== 'Enter') return;
+    if (event.shiftKey) return;
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    event.preventDefault();
+    sendCustomerServiceMessage();
+}
+
+function handleCustomerServiceComposerDocumentClick(event) {
+    if (!customerServiceState.slashMenuVisible) return;
+    const input = document.getElementById('csMessageInput');
+    const menu = document.getElementById('csTemplateSlashMenu');
+    if (!input || !menu) return;
+    if (input.contains(event.target) || menu.contains(event.target)) return;
+    hideCustomerServiceSlashMenu();
+}
+
+function toggleCustomerServiceConversationStar(event, cookieIdEncoded, chatIdEncoded) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+    const cookieId = decodeURIComponent(cookieIdEncoded || '');
+    const chatId = decodeURIComponent(chatIdEncoded || '');
+    const key = getCustomerServiceConversationKey(cookieId, chatId);
+    if (!cookieId || !chatId) return;
+
+    if (customerServiceState.starredConversationKeys.has(key)) {
+        customerServiceState.starredConversationKeys.delete(key);
+    } else {
+        customerServiceState.starredConversationKeys.add(key);
+    }
+    saveCustomerServiceStarredConversations();
+    renderCustomerServiceConversationList();
+}
+
+async function loadCustomerService() {
+    if (!customerServiceState.initialized) {
+        loadCustomerServiceLocalSettings();
+        renderCustomerServiceQuickReplies();
+        const input = document.getElementById('csMessageInput');
+        if (input) {
+            input.addEventListener('keydown', handleCustomerServiceComposerKeydown);
+            input.addEventListener('paste', handleCustomerServiceImagePaste);
+            input.addEventListener('input', handleCustomerServiceComposerInput);
+            input.addEventListener('click', refreshCustomerServiceSlashMenu);
+            input.addEventListener('keyup', refreshCustomerServiceSlashMenu);
+            resizeCustomerServiceInput();
+        }
+        if (!customerServiceState.documentClickBound) {
+            document.addEventListener('click', handleCustomerServiceComposerDocumentClick);
+            customerServiceState.documentClickBound = true;
+        }
+        if (!customerServiceState.viewportBound) {
+            window.addEventListener('resize', handleCustomerServiceViewportChange);
+            customerServiceState.viewportBound = true;
+        }
+        customerServiceState.initialized = true;
+    }
+
+    customerServiceState.mobileView = isCustomerServiceMobile() ? 'list' : 'chat';
+    customerServiceState.mobileOrderDrawerOpen = false;
+    renderCustomerServiceQuickReplies();
+    hideCustomerServiceSlashMenu();
+    applyCustomerServiceMobileLayout();
+    await refreshCustomerServiceData({ silent: true, preserveSelection: true });
+    startCustomerServicePolling();
+}
+
+async function refreshCustomerServiceData(options = {}) {
+    const { silent = false, preserveSelection = true } = options;
+    try {
+        const response = await fetch(`${apiBase}/api/customer-service/conversations`, {
+            headers: { 'Authorization': `Bearer ${authToken}` }
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        const result = await response.json();
+        customerServiceState.accounts = result.accounts || [];
+
+        let keepSelection = false;
+        if (preserveSelection && customerServiceState.selectedCookieId && customerServiceState.selectedChatId) {
+            keepSelection = !!getCustomerServiceSelectedConversation();
+        }
+
+        if (!keepSelection) {
+            const firstConversation = customerServiceState.accounts
+                .flatMap(account => (account.conversations || []).map(conv => ({ accountId: account.id, conv })))
+                .sort((a, b) => Number(b.conv.last_message_time || 0) - Number(a.conv.last_message_time || 0))[0];
+            if (firstConversation) {
+                customerServiceState.selectedCookieId = firstConversation.accountId;
+                customerServiceState.selectedChatId = String(firstConversation.conv.chat_id || '');
+                customerServiceState.selectedPeerUserId = String(firstConversation.conv.peer_user_id || '');
+                customerServiceState.selectedPeerUserName = String(firstConversation.conv.peer_user_name || '');
+            } else {
+                customerServiceState.selectedCookieId = '';
+                customerServiceState.selectedChatId = '';
+                customerServiceState.selectedPeerUserId = '';
+                customerServiceState.selectedPeerUserName = '';
+                customerServiceState.mobileView = 'list';
+            }
+        }
+
+        renderCustomerServiceConversationList();
+        renderCustomerServiceConversationHeader();
+
+        if (customerServiceState.selectedCookieId && customerServiceState.selectedChatId) {
+            await Promise.all([
+                loadCustomerServiceMessages({ silent }),
+                loadCustomerServiceOrderInfo()
+            ]);
+        } else {
+            renderCustomerServiceMessages([]);
+            renderCustomerServiceOrderInfo(null);
+        }
+        applyCustomerServiceMobileLayout();
+    } catch (error) {
+        console.error('刷新客服台数据失败:', error);
+        if (!silent) showToast('刷新客服台数据失败', 'danger');
+    }
+}
+
+function filterCustomerServiceConversations() {
+    renderCustomerServiceConversationList();
+}
+
+function renderCustomerServiceConversationList() {
+    const container = document.getElementById('csAccountConversationList');
+    const statsEl = document.getElementById('csConversationStats');
+    const searchInput = document.getElementById('csConversationSearch');
+    const statusSelect = document.getElementById('csConversationStatusFilter');
+    if (!container) return;
+
+    const keyword = (searchInput?.value || '').trim().toLowerCase();
+    const selectedStatus = String(statusSelect?.value || 'all');
+    let totalVisibleConversations = 0;
+    let totalStarredConversations = 0;
+
+    if (!customerServiceState.accounts.length) {
+        container.innerHTML = `
+            <div class="cs-empty-state">
+                <i class="bi bi-inboxes"></i>
+                <p>当前运行期暂无会话</p>
+            </div>
+        `;
+        if (statsEl) statsEl.textContent = '0 条会话';
+        return;
+    }
+
+    const html = customerServiceState.accounts.map(account => {
+        const allConversations = account.conversations || [];
+        const filteredConversations = allConversations.filter(conv => {
+            const status = getCustomerServiceConversationStatus(conv);
+            const isStarred = isCustomerServiceConversationStarred(account.id, conv.chat_id);
+            if (isStarred) totalStarredConversations += 1;
+
+            if (selectedStatus === 'pending' && status !== 'pending') return false;
+            if (selectedStatus === 'replied' && status !== 'replied') return false;
+            if (selectedStatus === 'starred' && !isStarred) return false;
+
+            if (!keyword) return true;
+            const text = [account.id, conv.peer_user_name, conv.peer_user_id, conv.chat_id, conv.last_message_preview].join(' ').toLowerCase();
+            return text.includes(keyword);
+        });
+
+        totalVisibleConversations += filteredConversations.length;
+
+        const conversationItems = filteredConversations.map(conv => {
+            const isActive =
+                String(account.id) === String(customerServiceState.selectedCookieId) &&
+                String(conv.chat_id) === String(customerServiceState.selectedChatId);
+            const encodedCookieId = encodeURIComponent(account.id);
+            const encodedChatId = encodeURIComponent(conv.chat_id || '');
+            const encodedPeerId = encodeURIComponent(conv.peer_user_id || '');
+            const encodedPeerName = encodeURIComponent(conv.peer_user_name || '');
+            const conversationStatus = getCustomerServiceConversationStatus(conv);
+            const isStarred = isCustomerServiceConversationStarred(account.id, conv.chat_id);
+            const starIconClass = isStarred ? 'bi-star-fill' : 'bi-star';
+            const statusLabel = conversationStatus === 'pending' ? '待回复' : '已回复';
+            return `
+                <div
+                    class="cs-conversation-item ${isActive ? 'active' : ''}"
+                    onclick="selectCustomerServiceConversation('${encodedCookieId}','${encodedChatId}','${encodedPeerId}','${encodedPeerName}')"
+                >
+                    <div class="cs-conversation-top">
+                        <div class="cs-conversation-name">${escapeCustomerServiceHtml(conv.peer_user_name || conv.peer_user_id || '未知用户')}</div>
+                        <div class="d-flex align-items-center gap-1">
+                            <button
+                                type="button"
+                                class="cs-conversation-star ${isStarred ? 'active' : ''}"
+                                title="${isStarred ? '取消星标' : '设为星标'}"
+                                onclick="toggleCustomerServiceConversationStar(event,'${encodedCookieId}','${encodedChatId}')"
+                            >
+                                <i class="bi ${starIconClass}"></i>
+                            </button>
+                            <div class="cs-conversation-time">${escapeCustomerServiceHtml(formatCustomerServiceTime(conv.last_message_time))}</div>
+                        </div>
+                    </div>
+                    <div class="cs-conversation-preview">${escapeCustomerServiceHtml(conv.last_message_preview || '')}</div>
+                    <div class="cs-conversation-meta">
+                        <span class="cs-conversation-status ${conversationStatus}">${statusLabel}</span>
+                        UID: ${escapeCustomerServiceHtml(conv.peer_user_id || '-')} | Chat: ${escapeCustomerServiceHtml(conv.chat_id || '-')}
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        return `
+            <div class="cs-account-group">
+                <div class="cs-account-title">
+                    <span>${escapeCustomerServiceHtml(account.id)}</span>
+                    <span class="cs-account-status ${account.enabled ? 'text-success' : 'text-muted'}">
+                        ${account.enabled ? '启用' : '禁用'} / ${account.running ? '运行中' : '未运行'}
+                    </span>
+                </div>
+                ${conversationItems || '<div class="text-muted small px-2 py-2">无会话</div>'}
+            </div>
+        `;
+    }).join('');
+
+    container.innerHTML = html;
+    if (statsEl) {
+        statsEl.textContent = `${totalVisibleConversations} 条会话 / 星标 ${totalStarredConversations}`;
+    }
+}
+
+function selectCustomerServiceConversation(cookieIdEncoded, chatIdEncoded, peerUserIdEncoded = '', peerUserNameEncoded = '') {
+    customerServiceState.selectedCookieId = decodeURIComponent(cookieIdEncoded || '');
+    customerServiceState.selectedChatId = decodeURIComponent(chatIdEncoded || '');
+    customerServiceState.selectedPeerUserId = decodeURIComponent(peerUserIdEncoded || '');
+    customerServiceState.selectedPeerUserName = decodeURIComponent(peerUserNameEncoded || '');
+    customerServiceState.mobileView = 'chat';
+    customerServiceState.mobileOrderDrawerOpen = false;
+
+    renderCustomerServiceConversationList();
+    renderCustomerServiceConversationHeader();
+    loadCustomerServiceMessages();
+    loadCustomerServiceOrderInfo();
+    applyCustomerServiceMobileLayout();
+}
+
+function renderCustomerServiceConversationHeader() {
+    const header = document.getElementById('csConversationHeader');
+    if (!header) return;
+    const mobile = isCustomerServiceMobile();
+    const selected = getCustomerServiceSelectedConversation();
+    if (!selected) {
+        header.innerHTML = `
+            <div class="cs-header-shell">
+                <div class="cs-empty-inline"><i class="bi bi-chat-left-text me-2"></i>请选择左侧会话</div>
+            </div>
+        `;
+        return;
+    }
+
+    header.innerHTML = `
+        <div class="cs-header-shell">
+            <div class="cs-header-main">
+                <button type="button" class="btn btn-sm btn-outline-secondary cs-mobile-nav-btn ${mobile ? '' : 'd-none'}" onclick="backToCustomerServiceConversationList()" title="返回会话列表">
+                    <i class="bi bi-chevron-left"></i>
+                </button>
+                <div>
+                    <div class="fw-bold">${escapeCustomerServiceHtml(selected.peer_user_name || selected.peer_user_id || '未知用户')}</div>
+                    <div class="text-muted small">
+                        账号: ${escapeCustomerServiceHtml(customerServiceState.selectedCookieId)} |
+                        UID: ${escapeCustomerServiceHtml(selected.peer_user_id || '-')} |
+                        Chat: ${escapeCustomerServiceHtml(selected.chat_id || '-')}
+                    </div>
+                </div>
+            </div>
+            <div class="cs-header-actions">
+                <button type="button" class="btn btn-sm btn-outline-secondary cs-mobile-order-btn ${mobile ? '' : 'd-none'}" onclick="openCustomerServiceOrderDrawer()">
+                    <i class="bi bi-receipt me-1"></i>订单
+                </button>
+                <span class="badge bg-light text-dark">消息 ${Number(selected.message_count || 0)}</span>
+            </div>
+        </div>
+    `;
+}
+
+function buildCustomerServiceMessageGroups(messages) {
+    const groups = [];
+    for (const raw of messages) {
+        const direction = raw.direction === 'out' ? 'out' : 'in';
+        const senderName = direction === 'out'
+            ? '我'
+            : (raw.peer_user_name || customerServiceState.selectedPeerUserName || raw.peer_user_id || '对方');
+        const messageTime = Number(raw.message_time || 0);
+        const normalized = {
+            direction,
+            senderName,
+            message_type: raw.message_type || 'text',
+            content: raw.content || '',
+            image_url: raw.image_url || '',
+            message_time: messageTime
+        };
+
+        const previous = groups[groups.length - 1];
+        const shouldMerge = Boolean(
+            previous &&
+            previous.direction === normalized.direction &&
+            previous.senderName === normalized.senderName &&
+            (
+                !normalized.message_time ||
+                !previous.lastMessageTime ||
+                Math.abs(normalized.message_time - previous.lastMessageTime) <= CUSTOMER_SERVICE_GROUP_WINDOW_MS
+            )
+        );
+
+        if (shouldMerge) {
+            previous.items.push(normalized);
+            previous.lastMessageTime = normalized.message_time || previous.lastMessageTime;
+        } else {
+            groups.push({
+                direction: normalized.direction,
+                senderName: normalized.senderName,
+                items: [normalized],
+                lastMessageTime: normalized.message_time
+            });
+        }
+    }
+    return groups;
+}
+
+async function loadCustomerServiceMessages(options = {}) {
+    const { silent = false } = options;
+    const cookieId = customerServiceState.selectedCookieId;
+    const chatId = customerServiceState.selectedChatId;
+    if (!cookieId || !chatId) {
+        renderCustomerServiceMessages([]);
+        return;
+    }
+
+    try {
+        const response = await fetch(
+            `${apiBase}/api/customer-service/messages?cookie_id=${encodeURIComponent(cookieId)}&chat_id=${encodeURIComponent(chatId)}&limit=200`,
+            { headers: { 'Authorization': `Bearer ${authToken}` } }
+        );
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const result = await response.json();
+        renderCustomerServiceMessages(result.data || []);
+    } catch (error) {
+        console.error('加载客服台消息失败:', error);
+        if (!silent) showToast('加载消息失败', 'danger');
+    }
+}
+
+function renderCustomerServiceMessages(messages) {
+    const container = document.getElementById('csMessageList');
+    if (!container) return;
+
+    if (!messages || messages.length === 0) {
+        container.innerHTML = `
+            <div class="cs-empty-state">
+                <i class="bi bi-chat-left-text"></i>
+                <p>当前会话暂无消息</p>
+            </div>
+        `;
+        return;
+    }
+
+    const groups = buildCustomerServiceMessageGroups(messages);
+    container.innerHTML = groups.map(group => {
+        const itemsHtml = group.items.map(item => {
+            const shortTime = formatCustomerServiceTime(item.message_time);
+            const fullTime = formatCustomerServiceFullTime(item.message_time);
+            const contentHtml = item.message_type === 'image'
+                ? `
+                    <div class="cs-message-image">
+                        <img src="${escapeCustomerServiceHtml(item.image_url || '')}" alt="图片消息" loading="lazy">
+                    </div>
+                  `
+                : `<div class="cs-message-content">${escapeCustomerServiceHtml(item.content || '')}</div>`;
+            return `
+                <div class="cs-message-part" title="${escapeCustomerServiceHtml(fullTime)}">
+                    ${contentHtml}
+                    <div class="cs-message-time">${escapeCustomerServiceHtml(shortTime)}</div>
+                </div>
+            `;
+        }).join('');
+
+        return `
+            <div class="cs-message-row ${group.direction}">
+                <div class="cs-message-bubble ${group.items.length > 1 ? 'grouped' : ''}">
+                    <div class="cs-message-meta">${escapeCustomerServiceHtml(group.senderName)}</div>
+                    ${itemsHtml}
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    container.scrollTop = container.scrollHeight;
+}
+
+function triggerCustomerServiceImageSelect() {
+    openCustomerServiceImageLibrary();
+}
+
+function setCustomerServiceImageLibraryUploading(uploading) {
+    customerServiceState.imageLibraryUploading = Boolean(uploading);
+    const uploadBtn = document.getElementById('csImageLibraryUploadBtn');
+    if (!uploadBtn) return;
+    uploadBtn.disabled = customerServiceState.imageLibraryUploading;
+    uploadBtn.innerHTML = customerServiceState.imageLibraryUploading
+        ? '<span class="spinner-border spinner-border-sm me-1"></span>上传中'
+        : '<i class="bi bi-cloud-arrow-up me-1"></i>上传图片';
+}
+
+function renderCustomerServiceImageLibrary() {
+    const container = document.getElementById('csImageLibraryGrid');
+    if (!container) return;
+    if (!customerServiceState.imageLibrary.length) {
+        container.innerHTML = `
+            <div class="cs-image-library-empty">
+                <i class="bi bi-image"></i>
+                <p class="mb-0">暂无图片，点击上方“上传图片”加入图片库</p>
+            </div>
+        `;
+        return;
+    }
+    container.innerHTML = customerServiceState.imageLibrary.map((item, index) => `
+        <div class="cs-image-library-item">
+            <button
+                type="button"
+                class="cs-image-library-thumb"
+                title="点击发送该图片"
+                onclick="sendCustomerServiceImageFromLibrary(${index})"
+            >
+                <img src="${escapeCustomerServiceHtml(item.image_url || '')}" alt="图片库图片" loading="lazy">
+            </button>
+            <button
+                type="button"
+                class="cs-image-library-delete"
+                title="删除"
+                onmousedown="event.preventDefault()"
+                onclick="deleteCustomerServiceImageFromLibrary(event, ${index})"
+            >
+                <i class="bi bi-trash"></i>
+            </button>
+            <div class="cs-image-library-meta">
+                <div class="cs-image-library-name">${escapeCustomerServiceHtml(item.name || '未命名图片')}</div>
+                <div class="cs-image-library-time">${escapeCustomerServiceHtml(formatCustomerServiceImageLibraryTime(item.created_at))}</div>
+            </div>
+        </div>
+    `).join('');
+}
+
+function openCustomerServiceImageLibrary() {
+    hideCustomerServiceSlashMenu();
+    let modalEl = document.getElementById('csImageLibraryModal');
+    if (modalEl) {
+        modalEl.remove();
+    }
+    modalEl = document.createElement('div');
+    modalEl.id = 'csImageLibraryModal';
+    modalEl.className = 'modal fade';
+    modalEl.tabIndex = -1;
+    modalEl.innerHTML = `
+        <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-image me-2"></i>图片库</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="cs-image-library-toolbar">
+                        <input
+                            type="file"
+                            id="csImageLibraryUploadInput"
+                            accept="image/*"
+                            style="display: none;"
+                            onchange="handleCustomerServiceImageLibraryUpload(this)"
+                        >
+                        <button type="button" class="btn btn-sm btn-primary" id="csImageLibraryUploadBtn" onclick="triggerCustomerServiceImageLibraryUpload()">
+                            <i class="bi bi-cloud-arrow-up me-1"></i>上传图片
+                        </button>
+                        <span class="text-muted small">点击图片可直接发送到当前会话</span>
+                    </div>
+                    <div id="csImageLibraryGrid" class="cs-image-library-grid"></div>
+                </div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modalEl);
+    renderCustomerServiceImageLibrary();
+    setCustomerServiceImageLibraryUploading(false);
+    const modal = new bootstrap.Modal(modalEl);
+    modal.show();
+    modalEl.addEventListener('hidden.bs.modal', () => modalEl.remove(), { once: true });
+}
+
+function triggerCustomerServiceImageLibraryUpload() {
+    if (customerServiceState.imageLibraryUploading) return;
+    const input = document.getElementById('csImageLibraryUploadInput');
+    if (input) input.click();
+}
+
+function deleteCustomerServiceImageFromLibrary(event, index) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+    if (customerServiceState.imageLibrary[index] === undefined) return;
+    customerServiceState.imageLibrary.splice(index, 1);
+    saveCustomerServiceImageLibrary();
+    renderCustomerServiceImageLibrary();
+}
+
+async function sendCustomerServiceImageFromLibrary(index) {
+    const item = customerServiceState.imageLibrary[index];
+    const imageUrl = String(item?.image_url || '').trim();
+    if (!imageUrl) return;
+    await sendCustomerServiceMessage({ imageOnly: true, preserveText: true, directImageUrl: imageUrl });
+}
+
+async function uploadCustomerServiceImageFile(file) {
+    const formData = new FormData();
+    formData.append('image', file);
+    const uploadResp = await fetch(`${apiBase}/upload-image`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${authToken}` },
+        body: formData
+    });
+    if (!uploadResp.ok) {
+        const err = await uploadResp.json().catch(() => ({}));
+        throw new Error(err.detail || '图片上传失败');
+    }
+    const uploadData = await uploadResp.json();
+    const imageUrl = String(uploadData.image_url || '').trim();
+    if (!imageUrl) {
+        throw new Error('图片上传成功但未返回URL');
+    }
+    return imageUrl;
+}
+
+async function handleCustomerServiceImageLibraryUpload(input) {
+    const file = input?.files?.[0];
+    if (!file) return;
+    if (!String(file.type || '').startsWith('image/')) {
+        showToast('仅支持图片文件', 'warning');
+        if (input) input.value = '';
+        return;
+    }
+    setCustomerServiceImageLibraryUploading(true);
+    try {
+        const imageUrl = await uploadCustomerServiceImageFile(file);
+        const imageName = String(file.name || '').trim().slice(0, 120);
+        const deduped = customerServiceState.imageLibrary.filter(item => String(item?.image_url || '').trim() !== imageUrl);
+        customerServiceState.imageLibrary = [
+            {
+                image_url: imageUrl,
+                name: imageName,
+                created_at: Date.now()
+            },
+            ...deduped
+        ].slice(0, CUSTOMER_SERVICE_MAX_IMAGE_LIBRARY_COUNT);
+        saveCustomerServiceImageLibrary();
+        renderCustomerServiceImageLibrary();
+        showToast('图片已加入图片库', 'success');
+    } catch (error) {
+        console.error('上传客服台图片库图片失败:', error);
+        showToast(error.message || '上传失败', 'danger');
+    } finally {
+        setCustomerServiceImageLibraryUploading(false);
+        if (input) input.value = '';
+    }
+}
+
+function setCustomerServiceSelectedImage(file) {
+    const imageFile = file && String(file.type || '').startsWith('image/') ? file : null;
+    customerServiceState.selectedImageFile = imageFile;
+}
+
+async function handleCustomerServiceImageSelected(input) {
+    const file = input?.files?.[0];
+    if (file && !String(file.type || '').startsWith('image/')) {
+        showToast('仅支持图片文件', 'warning');
+        if (input) input.value = '';
+        setCustomerServiceSelectedImage(null);
+        return;
+    }
+    if (!file) return;
+    setCustomerServiceSelectedImage(file);
+    await sendCustomerServiceMessage({ imageOnly: true, preserveText: true, silentSuccess: true });
+    if (input) input.value = '';
+}
+
+async function handleCustomerServiceImagePaste(event) {
+    const clipboard = event?.clipboardData;
+    const items = clipboard?.items;
+    if (!items || !items.length) return;
+
+    let imageBlob = null;
+    for (const item of items) {
+        if (item.kind === 'file' && String(item.type || '').startsWith('image/')) {
+            imageBlob = item.getAsFile();
+            if (imageBlob) break;
+        }
+    }
+    if (!imageBlob) return;
+
+    event.preventDefault();
+
+    const mimeType = String(imageBlob.type || 'image/png');
+    const ext = (mimeType.split('/')[1] || 'png').split('+')[0];
+    const filename = `pasted-image-${Date.now()}.${ext}`;
+    let imageFile = imageBlob;
+
+    if (typeof File === 'function') {
+        imageFile = new File([imageBlob], filename, { type: mimeType });
+    } else if (!imageBlob.name) {
+        try {
+            Object.defineProperty(imageBlob, 'name', { value: filename, configurable: true });
+        } catch (e) {
+            // 浏览器不支持时仅保持blob对象，不影响后续FormData上传
+        }
+    }
+
+    setCustomerServiceSelectedImage(imageFile);
+    await sendCustomerServiceMessage({ imageOnly: true, preserveText: true, silentSuccess: true });
+}
+
+function clearCustomerServiceImage() {
+    const input = document.getElementById('csImageInput');
+    if (input) input.value = '';
+    setCustomerServiceSelectedImage(null);
+}
+
+async function sendCustomerServiceMessage(options = {}) {
+    if (customerServiceState.isSending) return;
+
+    const { imageOnly = false, preserveText = false, silentSuccess = false, directImageUrl = '' } = options;
+    const cookieId = customerServiceState.selectedCookieId;
+    const chatId = customerServiceState.selectedChatId;
+    const toUserId = customerServiceState.selectedPeerUserId;
+    const toUserName = customerServiceState.selectedPeerUserName || '';
+    const textInput = document.getElementById('csMessageInput');
+    const text = imageOnly ? '' : (textInput?.value || '').trim();
+    const imageFile = customerServiceState.selectedImageFile;
+    const presetImageUrl = String(directImageUrl || '').trim();
+
+    if (!cookieId || !chatId || !toUserId) {
+        showToast('请先选择有效会话', 'warning');
+        return;
+    }
+
+    if (!text && !imageFile && !presetImageUrl) {
+        showToast('请输入消息或选择图片', 'warning');
+        return;
+    }
+
+    const sendBtn = document.getElementById('csSendBtn');
+    customerServiceState.isSending = true;
+    if (sendBtn) {
+        sendBtn.disabled = true;
+        sendBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>发送中';
+    }
+
+    try {
+        let imageUrl = presetImageUrl;
+        if (!imageUrl && imageFile) {
+            imageUrl = await uploadCustomerServiceImageFile(imageFile);
+        }
+        if (imageUrl) {
+            const imageSendResp = await fetch(`${apiBase}/api/customer-service/send`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${authToken}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    cookie_id: cookieId,
+                    chat_id: chatId,
+                    to_user_id: toUserId,
+                    to_user_name: toUserName,
+                    message_type: 'image',
+                    image_url: imageUrl
+                })
+            });
+            if (!imageSendResp.ok) {
+                const err = await imageSendResp.json().catch(() => ({}));
+                throw new Error(err.detail || '图片发送失败');
+            }
+        }
+
+        if (text) {
+            const textSendResp = await fetch(`${apiBase}/api/customer-service/send`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${authToken}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    cookie_id: cookieId,
+                    chat_id: chatId,
+                    to_user_id: toUserId,
+                    to_user_name: toUserName,
+                    message_type: 'text',
+                    message: text
+                })
+            });
+            if (!textSendResp.ok) {
+                const err = await textSendResp.json().catch(() => ({}));
+                throw new Error(err.detail || '文本发送失败');
+            }
+        }
+
+        if (textInput && !preserveText) {
+            textInput.value = '';
+            resizeCustomerServiceInput(true);
+        }
+        hideCustomerServiceSlashMenu();
+        clearCustomerServiceImage();
+        customerServiceState.mobileView = 'chat';
+        if (!silentSuccess) {
+            showToast('消息发送成功', 'success');
+        }
+        await refreshCustomerServiceData({ silent: true, preserveSelection: true });
+    } catch (error) {
+        console.error('发送客服消息失败:', error);
+        showToast(error.message || '发送失败', 'danger');
+    } finally {
+        customerServiceState.isSending = false;
+        if (sendBtn) {
+            sendBtn.disabled = false;
+            sendBtn.innerHTML = '<i class="bi bi-send me-1"></i>发送';
+        }
+    }
+}
+
+async function loadCustomerServiceOrderInfo() {
+    const cookieId = customerServiceState.selectedCookieId;
+    const chatId = customerServiceState.selectedChatId;
+    if (!cookieId || !chatId) {
+        renderCustomerServiceOrderInfo(null);
+        return;
+    }
+
+    try {
+        const response = await fetch(
+            `${apiBase}/api/customer-service/order?cookie_id=${encodeURIComponent(cookieId)}&chat_id=${encodeURIComponent(chatId)}&peer_user_id=${encodeURIComponent(customerServiceState.selectedPeerUserId || '')}`,
+            { headers: { 'Authorization': `Bearer ${authToken}` } }
+        );
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const result = await response.json();
+        renderCustomerServiceOrderInfo(result.data || null);
+    } catch (error) {
+        console.error('加载客服台订单信息失败:', error);
+        renderCustomerServiceOrderInfo(null);
+    }
+}
+
+function renderCustomerServiceOrderInfo(order) {
+    const panel = document.getElementById('csOrderInfoPanel');
+    if (!panel) return;
+
+    if (!order) {
+        panel.innerHTML = `
+            <div class="cs-empty-state small">
+                <i class="bi bi-receipt"></i>
+                <p>当前会话暂无关联订单</p>
+            </div>
+        `;
+        return;
+    }
+
+    panel.innerHTML = `
+        <div class="cs-order-card">
+            <div class="cs-order-row"><span class="cs-order-key">订单号:</span><span class="cs-order-val">${escapeCustomerServiceHtml(order.order_id || '-')}</span></div>
+            <div class="cs-order-row"><span class="cs-order-key">商品ID:</span><span class="cs-order-val">${escapeCustomerServiceHtml(order.item_id || '-')}</span></div>
+            <div class="cs-order-row"><span class="cs-order-key">买家ID:</span><span class="cs-order-val">${escapeCustomerServiceHtml(order.buyer_id || '-')}</span></div>
+            <div class="cs-order-row"><span class="cs-order-key">买家昵称:</span><span class="cs-order-val">${escapeCustomerServiceHtml(order.buyer_nick || '-')}</span></div>
+            <div class="cs-order-row"><span class="cs-order-key">订单状态:</span><span class="cs-order-val">${escapeCustomerServiceHtml(order.order_status || '-')}</span></div>
+            <div class="cs-order-row"><span class="cs-order-key">金额:</span><span class="cs-order-val">${escapeCustomerServiceHtml(order.amount || '-')}</span></div>
+            <div class="cs-order-row"><span class="cs-order-key">数量:</span><span class="cs-order-val">${escapeCustomerServiceHtml(order.quantity || '-')}</span></div>
+            <div class="cs-order-row"><span class="cs-order-key">规格:</span><span class="cs-order-val">${escapeCustomerServiceHtml(order.spec_name || '-')}${order.spec_value ? `: ${escapeCustomerServiceHtml(order.spec_value)}` : ''}</span></div>
+            <div class="cs-order-row"><span class="cs-order-key">会话SID:</span><span class="cs-order-val">${escapeCustomerServiceHtml(order.sid || '-')}</span></div>
+            <div class="cs-order-row"><span class="cs-order-key">创建时间:</span><span class="cs-order-val">${escapeCustomerServiceHtml(order.created_at || '-')}</span></div>
+            <div class="cs-order-row"><span class="cs-order-key">更新时间:</span><span class="cs-order-val">${escapeCustomerServiceHtml(order.updated_at || '-')}</span></div>
+        </div>
+    `;
+}
+
+function startCustomerServicePolling() {
+    stopCustomerServicePolling();
+    customerServiceState.pollingTimer = setInterval(async () => {
+        const section = document.getElementById('customer-service-section');
+        if (!section || !section.classList.contains('active')) return;
+        if (customerServiceState.isSending) return;
+        await refreshCustomerServiceData({ silent: true, preserveSelection: true });
+    }, customerServiceState.pollingIntervalMs);
+}
+
+function stopCustomerServicePolling() {
+    if (customerServiceState.pollingTimer) {
+        clearInterval(customerServiceState.pollingTimer);
+        customerServiceState.pollingTimer = null;
+    }
+    hideCustomerServiceSlashMenu();
+    closeCustomerServiceOrderDrawer();
+}
+
 // ==================== 在线客服IM功能 ====================
 
 // 存储IM账号数据
@@ -15499,4 +17330,3 @@ function loadOnlineIm() {
         iframe.src = realSrc;
     }
 }
-

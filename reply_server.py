@@ -80,6 +80,178 @@ BRUTE_FORCE_CONFIG = {
     'captcha_require_failures': 2,  # 失败多少次后需要验证码
 }
 
+# 客服台发送风控（仅作用于 /api/customer-service/send）
+CUSTOMER_SERVICE_SEND_GUARD_DEFAULTS = {
+    'min_interval_seconds': float(os.getenv('CS_SEND_MIN_INTERVAL_SECONDS', '1.5')),
+    'window_seconds': int(os.getenv('CS_SEND_WINDOW_SECONDS', '60')),
+    'max_messages_per_window': int(os.getenv('CS_SEND_MAX_MESSAGES_PER_WINDOW', '20')),
+    'duplicate_block_seconds': int(os.getenv('CS_SEND_DUPLICATE_BLOCK_SECONDS', '30')),
+    'max_message_length': int(os.getenv('CS_SEND_MAX_MESSAGE_LENGTH', '1000')),
+}
+CUSTOMER_SERVICE_SEND_GUARD_SETTING_KEYS = {
+    'min_interval_seconds': 'cs_send_min_interval_seconds',
+    'window_seconds': 'cs_send_window_seconds',
+    'max_messages_per_window': 'cs_send_max_messages_per_window',
+    'duplicate_block_seconds': 'cs_send_duplicate_block_seconds',
+    'max_message_length': 'cs_send_max_message_length',
+}
+CUSTOMER_SERVICE_SEND_GUARD_DESCRIPTIONS = {
+    'min_interval_seconds': '客服台发送风控：同会话最小发送间隔（秒）',
+    'window_seconds': '客服台发送风控：统计窗口时长（秒）',
+    'max_messages_per_window': '客服台发送风控：窗口内最大消息数',
+    'duplicate_block_seconds': '客服台发送风控：重复文本拦截时长（秒）',
+    'max_message_length': '客服台发送风控：文本最大长度（字符）',
+}
+CUSTOMER_SERVICE_SEND_GUARD_RANGES = {
+    'min_interval_seconds': (0.0, 30.0, 'float'),
+    'window_seconds': (5, 3600, 'int'),
+    'max_messages_per_window': (1, 500, 'int'),
+    'duplicate_block_seconds': (1, 3600, 'int'),
+    'max_message_length': (1, 5000, 'int'),
+}
+customer_service_send_lock = asyncio.Lock()
+customer_service_send_tracker = defaultdict(
+    lambda: {
+        'last_sent_at': 0.0,
+        'window_timestamps': [],
+        'last_text': '',
+        'last_text_at': 0.0,
+        'updated_at': 0.0
+    }
+)
+CUSTOMER_SERVICE_SEND_TRACKER_MAX_KEYS = int(os.getenv('CS_SEND_TRACKER_MAX_KEYS', '5000'))
+
+
+def _normalize_customer_service_text(text: str) -> str:
+    return re.sub(r'\s+', ' ', str(text or '').strip())
+
+
+def normalize_customer_service_send_guard_config(raw: Dict[str, Any], base: Dict[str, Any] = None) -> Dict[str, Any]:
+    """归一化客服台发送风控配置（类型转换 + 区间裁剪）"""
+    config = dict(base or CUSTOMER_SERVICE_SEND_GUARD_DEFAULTS)
+    source = raw or {}
+
+    for key, (min_value, max_value, value_type) in CUSTOMER_SERVICE_SEND_GUARD_RANGES.items():
+        current_value = config.get(key, CUSTOMER_SERVICE_SEND_GUARD_DEFAULTS[key])
+        candidate = source.get(key, current_value)
+        try:
+            if value_type == 'float':
+                parsed = float(candidate)
+            else:
+                parsed = int(float(candidate))
+        except (TypeError, ValueError):
+            parsed = current_value
+
+        if parsed < min_value:
+            parsed = min_value
+        if parsed > max_value:
+            parsed = max_value
+
+        if value_type == 'int':
+            parsed = int(parsed)
+        config[key] = parsed
+
+    return config
+
+
+def load_customer_service_send_guard_config() -> Dict[str, Any]:
+    """从 system_settings 读取客服台发送风控配置"""
+    raw = {}
+    for config_key, setting_key in CUSTOMER_SERVICE_SEND_GUARD_SETTING_KEYS.items():
+        value = db_manager.get_system_setting(setting_key)
+        if value is not None:
+            raw[config_key] = value
+    return normalize_customer_service_send_guard_config(raw)
+
+
+def save_customer_service_send_guard_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """保存客服台发送风控配置到 system_settings，返回归一化结果"""
+    normalized = normalize_customer_service_send_guard_config(config)
+    for config_key, setting_key in CUSTOMER_SERVICE_SEND_GUARD_SETTING_KEYS.items():
+        value = normalized[config_key]
+        description = CUSTOMER_SERVICE_SEND_GUARD_DESCRIPTIONS.get(config_key, '')
+        db_manager.set_system_setting(setting_key, str(value), description)
+    return normalized
+
+
+def _build_customer_service_send_message_preview(message_type: str, message: str, image_url: str = '') -> str:
+    if message_type == 'image':
+        return '[图片]'
+    text = _normalize_customer_service_text(message)
+    if not text and image_url:
+        text = f"[图片] {image_url}"
+    return text[:200]
+
+
+async def check_and_record_customer_service_send_guard(
+    user_id: int,
+    cookie_id: str,
+    chat_id: str,
+    message_type: str,
+    message: str,
+    guard_config: Dict[str, Any]
+):
+    """客服台发送前检查并记录节流状态（内存级，进程内生效）"""
+    now = time.time()
+    key = f"{user_id}:{cookie_id}:{str(chat_id).split('@')[0]}"
+
+    min_interval_seconds = max(0.0, float(guard_config['min_interval_seconds']))
+    window_seconds = max(1, int(guard_config['window_seconds']))
+    max_messages_per_window = max(1, int(guard_config['max_messages_per_window']))
+    duplicate_block_seconds = max(1, int(guard_config['duplicate_block_seconds']))
+
+    async with customer_service_send_lock:
+        # 轻量清理：移除长时间未更新键，避免内存无上限增长
+        if len(customer_service_send_tracker) > CUSTOMER_SERVICE_SEND_TRACKER_MAX_KEYS:
+            stale_before = now - (window_seconds * 5)
+            stale_keys = [
+                k for k, v in customer_service_send_tracker.items()
+                if float(v.get('updated_at', 0.0) or 0.0) < stale_before
+            ]
+            for stale_key in stale_keys:
+                customer_service_send_tracker.pop(stale_key, None)
+
+        state = customer_service_send_tracker[key]
+        last_sent_at = float(state.get('last_sent_at', 0.0) or 0.0)
+        if last_sent_at > 0 and now - last_sent_at < min_interval_seconds:
+            remain = max(0.1, min_interval_seconds - (now - last_sent_at))
+            raise HTTPException(
+                status_code=429,
+                detail=f"发送过于频繁，请 {remain:.1f} 秒后重试"
+            )
+
+        valid_timestamps = [
+            ts for ts in state.get('window_timestamps', [])
+            if now - float(ts) <= window_seconds
+        ]
+        if len(valid_timestamps) >= max_messages_per_window:
+            raise HTTPException(
+                status_code=429,
+                detail=f"发送过于频繁，{window_seconds} 秒内最多发送 {max_messages_per_window} 条"
+            )
+
+        if message_type == 'text':
+            normalized_text = _normalize_customer_service_text(message)
+            if normalized_text:
+                last_text = str(state.get('last_text', '') or '')
+                last_text_at = float(state.get('last_text_at', 0.0) or 0.0)
+                if (
+                    normalized_text == last_text
+                    and last_text_at > 0
+                    and now - last_text_at < duplicate_block_seconds
+                ):
+                    raise HTTPException(
+                        status_code=429,
+                        detail=f"检测到重复消息，请 {duplicate_block_seconds} 秒后再发送相同内容"
+                    )
+                state['last_text'] = normalized_text
+                state['last_text_at'] = now
+
+        valid_timestamps.append(now)
+        state['window_timestamps'] = valid_timestamps
+        state['last_sent_at'] = now
+        state['updated_at'] = now
+
 
 def cleanup_login_trackers():
     """清理过期的登录追踪记录"""
@@ -1555,6 +1727,34 @@ class SendMessageResponse(BaseModel):
     message: str
 
 
+class CustomerServiceSendRequest(BaseModel):
+    cookie_id: str
+    chat_id: str
+    to_user_id: str
+    to_user_name: Optional[str] = ''
+    message_type: str = 'text'  # text | image
+    message: Optional[str] = ''
+    image_url: Optional[str] = ''
+
+
+class CustomerServiceSendGuardConfigRequest(BaseModel):
+    min_interval_seconds: Optional[float] = None
+    window_seconds: Optional[int] = None
+    max_messages_per_window: Optional[int] = None
+    duplicate_block_seconds: Optional[int] = None
+    max_message_length: Optional[int] = None
+    use_defaults: Optional[bool] = False
+
+
+def normalize_im_id(value: str) -> str:
+    if value is None:
+        return ''
+    value = str(value).strip()
+    if not value:
+        return ''
+    return value.split('@')[0]
+
+
 def verify_api_key(api_key: str) -> bool:
     """验证API秘钥"""
     try:
@@ -1683,6 +1883,344 @@ async def send_message_api(request: SendMessageRequest):
             success=False,
             message=f"发送消息失败: {str(e)}"
         )
+
+
+@app.get('/api/customer-service/conversations')
+def get_customer_service_conversations(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """客服台会话列表（仅当前运行期消息）"""
+    user_id = current_user['user_id']
+    manager = cookie_manager.manager
+    user_cookies = db_manager.get_all_cookies(user_id)
+    conversations = db_manager.get_customer_service_conversations(user_id)
+    stats = db_manager.get_customer_service_runtime_stats(user_id)
+
+    account_map = {}
+    for cookie_id in user_cookies.keys():
+        cookie_detail = db_manager.get_cookie_details(cookie_id) or {}
+        enabled = manager.get_cookie_status(cookie_id) if manager else db_manager.get_cookie_status(cookie_id)
+        live_instance = manager.get_xianyu_instance(cookie_id) if manager else None
+        account_map[cookie_id] = {
+            'id': cookie_id,
+            'enabled': bool(enabled),
+            'running': live_instance is not None,
+            'remark': cookie_detail.get('remark', ''),
+            'conversations': [],
+            'latest_message_time': 0
+        }
+
+    for item in conversations:
+        cookie_id = item.get('cookie_id')
+        if cookie_id not in account_map:
+            continue
+        account_map[cookie_id]['conversations'].append(item)
+        latest_time = int(item.get('last_message_time') or 0)
+        if latest_time > account_map[cookie_id]['latest_message_time']:
+            account_map[cookie_id]['latest_message_time'] = latest_time
+
+    accounts = list(account_map.values())
+    accounts.sort(key=lambda x: (x.get('latest_message_time', 0), x.get('id', '')), reverse=True)
+
+    return {
+        'success': True,
+        'runtime_id': db_manager.customer_service_runtime_id,
+        'limits': {
+            'per_session': db_manager.customer_service_per_session_limit,
+            'global': db_manager.customer_service_global_limit
+        },
+        'stats': stats,
+        'accounts': accounts
+    }
+
+
+@app.get('/api/customer-service/messages')
+def get_customer_service_messages(
+    cookie_id: str,
+    chat_id: str,
+    limit: int = 200,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    normalized_cookie_id = str(cookie_id).strip()
+    normalized_chat_id = normalize_im_id(chat_id)
+
+    if not normalized_cookie_id or not normalized_chat_id:
+        raise HTTPException(status_code=400, detail="cookie_id 和 chat_id 不能为空")
+
+    cookie_detail = db_manager.get_cookie_details(normalized_cookie_id)
+    if not cookie_detail or cookie_detail.get('user_id') != current_user['user_id']:
+        raise HTTPException(status_code=404, detail="账号不存在或无权限")
+
+    messages = db_manager.get_customer_service_messages(
+        user_id=current_user['user_id'],
+        cookie_id=normalized_cookie_id,
+        chat_id=normalized_chat_id,
+        limit=limit
+    )
+
+    return {
+        'success': True,
+        'data': messages
+    }
+
+
+@app.get('/api/customer-service/order')
+def get_customer_service_order_info(
+    cookie_id: str,
+    chat_id: str,
+    peer_user_id: str = '',
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    normalized_cookie_id = str(cookie_id).strip()
+    normalized_chat_id = normalize_im_id(chat_id)
+    normalized_peer_user_id = normalize_im_id(peer_user_id)
+
+    if not normalized_cookie_id or not normalized_chat_id:
+        raise HTTPException(status_code=400, detail="cookie_id 和 chat_id 不能为空")
+
+    cookie_detail = db_manager.get_cookie_details(normalized_cookie_id)
+    if not cookie_detail or cookie_detail.get('user_id') != current_user['user_id']:
+        raise HTTPException(status_code=404, detail="账号不存在或无权限")
+
+    order_info = db_manager.get_customer_service_order_info(
+        user_id=current_user['user_id'],
+        cookie_id=normalized_cookie_id,
+        chat_id=normalized_chat_id,
+        peer_user_id=normalized_peer_user_id
+    )
+
+    return {
+        'success': True,
+        'data': order_info
+    }
+
+
+@app.get('/admin/customer-service/send-guard-config')
+def get_customer_service_send_guard_config(admin_user: Dict[str, Any] = Depends(require_admin)):
+    config = load_customer_service_send_guard_config()
+    return {
+        'success': True,
+        'data': config,
+        'defaults': normalize_customer_service_send_guard_config(CUSTOMER_SERVICE_SEND_GUARD_DEFAULTS),
+        'ranges': {
+            key: {'min': rule[0], 'max': rule[1], 'type': rule[2]}
+            for key, rule in CUSTOMER_SERVICE_SEND_GUARD_RANGES.items()
+        }
+    }
+
+
+@app.put('/admin/customer-service/send-guard-config')
+def update_customer_service_send_guard_config(
+    request: CustomerServiceSendGuardConfigRequest,
+    admin_user: Dict[str, Any] = Depends(require_admin)
+):
+    if request.use_defaults:
+        saved = save_customer_service_send_guard_config(CUSTOMER_SERVICE_SEND_GUARD_DEFAULTS)
+        return {'success': True, 'message': '已恢复默认风控配置', 'data': saved}
+
+    current = load_customer_service_send_guard_config()
+    patch_data = {}
+    for key in CUSTOMER_SERVICE_SEND_GUARD_RANGES.keys():
+        value = getattr(request, key)
+        if value is not None:
+            patch_data[key] = value
+
+    merged = normalize_customer_service_send_guard_config(patch_data, base=current)
+    saved = save_customer_service_send_guard_config(merged)
+    return {'success': True, 'message': '风控配置已更新', 'data': saved}
+
+
+@app.get('/admin/customer-service/send-audit-logs')
+def get_customer_service_send_audit_logs(
+    user_id: Optional[int] = None,
+    cookie_id: str = '',
+    chat_id: str = '',
+    message_type: str = '',
+    status: str = '',
+    limit: int = 100,
+    offset: int = 0,
+    admin_user: Dict[str, Any] = Depends(require_admin)
+):
+    safe_limit = max(1, min(int(limit), 500))
+    safe_offset = max(0, int(offset))
+    normalized_cookie_id = str(cookie_id).strip()
+    normalized_chat_id = normalize_im_id(chat_id)
+    normalized_type = str(message_type or '').strip().lower()
+    normalized_status = str(status or '').strip().lower()
+    safe_user_id = int(user_id) if user_id is not None else None
+
+    logs = db_manager.get_customer_service_send_audit_logs(
+        user_id=safe_user_id,
+        cookie_id=normalized_cookie_id,
+        chat_id=normalized_chat_id,
+        message_type=normalized_type,
+        status=normalized_status,
+        limit=safe_limit,
+        offset=safe_offset
+    )
+    total = db_manager.get_customer_service_send_audit_logs_count(
+        user_id=safe_user_id,
+        cookie_id=normalized_cookie_id,
+        chat_id=normalized_chat_id,
+        message_type=normalized_type,
+        status=normalized_status
+    )
+
+    return {
+        'success': True,
+        'data': logs,
+        'total': total,
+        'limit': safe_limit,
+        'offset': safe_offset
+    }
+
+
+@app.delete('/admin/customer-service/send-audit-logs/{log_id}')
+def delete_customer_service_send_audit_log(
+    log_id: int,
+    admin_user: Dict[str, Any] = Depends(require_admin)
+):
+    success = db_manager.delete_customer_service_send_audit_log(log_id)
+    if not success:
+        raise HTTPException(status_code=404, detail='日志不存在或删除失败')
+    return {'success': True, 'message': '删除成功'}
+
+
+@app.delete('/admin/customer-service/send-audit-logs')
+def clear_customer_service_send_audit_logs(
+    user_id: Optional[int] = None,
+    cookie_id: str = '',
+    admin_user: Dict[str, Any] = Depends(require_admin)
+):
+    safe_user_id = int(user_id) if user_id is not None else None
+    normalized_cookie_id = str(cookie_id).strip()
+    cleared = db_manager.clear_customer_service_send_audit_logs(
+        user_id=safe_user_id,
+        cookie_id=normalized_cookie_id
+    )
+    return {'success': True, 'message': f'已清空 {cleared} 条发送审计日志', 'cleared': cleared}
+
+
+@app.post('/api/customer-service/send')
+async def send_customer_service_message(
+    request: CustomerServiceSendRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    normalized_cookie_id = str(request.cookie_id).strip()
+    normalized_chat_id = normalize_im_id(request.chat_id)
+    normalized_to_user_id = normalize_im_id(request.to_user_id)
+    normalized_to_user_name = str(request.to_user_name or '').strip()
+    normalized_message_type = str(request.message_type or 'text').strip().lower()
+    normalized_message = str(request.message or '')
+    normalized_image_url = str(request.image_url or '').strip()
+    guard_config = load_customer_service_send_guard_config()
+    audit_logged = False
+    message_preview = _build_customer_service_send_message_preview(
+        normalized_message_type,
+        normalized_message,
+        normalized_image_url
+    )
+
+    def write_send_audit(status: str, reason: str = ''):
+        nonlocal audit_logged
+        try:
+            db_manager.add_customer_service_send_audit_log(
+                user_id=current_user['user_id'],
+                cookie_id=normalized_cookie_id,
+                chat_id=normalized_chat_id,
+                to_user_id=normalized_to_user_id,
+                to_user_name=normalized_to_user_name,
+                message_type=normalized_message_type,
+                message_preview=message_preview,
+                image_url=normalized_image_url if normalized_message_type == 'image' else '',
+                status=status,
+                error_detail=reason
+            )
+            audit_logged = True
+        except Exception as audit_error:
+            logger.warning(f"写入客服发送审计日志失败: {audit_error}")
+
+    def reject(detail: str, status_code: int = 400):
+        write_send_audit('rejected', str(detail))
+        raise HTTPException(status_code=status_code, detail=detail)
+
+    if not normalized_cookie_id or not normalized_chat_id or not normalized_to_user_id:
+        reject("cookie_id、chat_id、to_user_id 不能为空")
+
+    if normalized_message_type not in ('text', 'image'):
+        reject("message_type 仅支持 text 或 image")
+
+    cookie_detail = db_manager.get_cookie_details(normalized_cookie_id)
+    if not cookie_detail or cookie_detail.get('user_id') != current_user['user_id']:
+        reject("账号不存在或无权限", status_code=404)
+
+    from XianyuAutoAsync import XianyuLive, ConnectionState
+    live_instance = XianyuLive.get_instance(normalized_cookie_id)
+    if not live_instance and cookie_manager.manager:
+        live_instance = cookie_manager.manager.get_xianyu_instance(normalized_cookie_id)
+
+    if not live_instance:
+        reject(f"账号 {normalized_cookie_id} 未运行，请先启动账号")
+
+    if live_instance.connection_state != ConnectionState.CONNECTED:
+        reject(f"账号WebSocket连接状态异常({live_instance.connection_state.value})，请等待重连")
+
+    if not live_instance.ws:
+        reject("账号WebSocket连接未就绪，请等待重连")
+
+    try:
+        if normalized_message_type == 'image':
+            if not normalized_image_url:
+                reject("image_url 不能为空")
+            await check_and_record_customer_service_send_guard(
+                user_id=current_user['user_id'],
+                cookie_id=normalized_cookie_id,
+                chat_id=normalized_chat_id,
+                message_type='image',
+                message=normalized_image_url,
+                guard_config=guard_config
+            )
+            await live_instance.send_image_msg(
+                live_instance.ws,
+                normalized_chat_id,
+                normalized_to_user_id,
+                normalized_image_url,
+                peer_name=normalized_to_user_name
+            )
+        else:
+            normalized_text = normalized_message.strip()
+            if not normalized_text:
+                reject("message 不能为空")
+            max_message_length = max(1, int(guard_config['max_message_length']))
+            if len(normalized_text) > max_message_length:
+                reject(f"message 过长，最多 {max_message_length} 字符")
+            await check_and_record_customer_service_send_guard(
+                user_id=current_user['user_id'],
+                cookie_id=normalized_cookie_id,
+                chat_id=normalized_chat_id,
+                message_type='text',
+                message=normalized_text,
+                guard_config=guard_config
+            )
+            await live_instance.send_msg(
+                live_instance.ws,
+                normalized_chat_id,
+                normalized_to_user_id,
+                normalized_text,
+                peer_name=normalized_to_user_name
+            )
+    except HTTPException as http_error:
+        if http_error.status_code >= 400 and not audit_logged:
+            write_send_audit('rejected', str(http_error.detail))
+        raise
+    except Exception as e:
+        write_send_audit('failed', str(e))
+        raise HTTPException(status_code=500, detail=f"消息发送失败: {str(e)}")
+
+    write_send_audit('success', '')
+
+    return {
+        'success': True,
+        'message': '消息发送成功'
+    }
 
 
 @app.post("/xianyu/reply", response_model=ResponseModel)
@@ -7260,7 +7798,8 @@ def get_table_data(table_name: str, admin_user: Dict[str, Any] = Depends(require
             'users', 'cookies', 'cookie_status', 'keywords', 'default_replies', 'default_reply_records',
             'ai_reply_settings', 'ai_conversations', 'ai_item_cache', 'item_info',
             'message_notifications', 'cards', 'delivery_rules', 'notification_channels',
-            'user_settings', 'system_settings', 'email_verifications', 'captcha_codes', 'orders', "item_replay"
+            'user_settings', 'system_settings', 'email_verifications', 'captcha_codes', 'orders', 'item_replay',
+            'risk_control_logs', 'customer_service_send_audit_logs'
         ]
 
         if table_name not in allowed_tables:
@@ -7299,7 +7838,7 @@ def export_table_data(table_name: str, admin_user: Dict[str, Any] = Depends(requ
             'ai_reply_settings', 'ai_conversations', 'ai_item_cache', 'item_info',
             'message_notifications', 'cards', 'delivery_rules', 'notification_channels',
             'user_settings', 'system_settings', 'email_verifications', 'captcha_codes', 'orders', 'item_replay',
-            'risk_control_logs'
+            'risk_control_logs', 'customer_service_send_audit_logs'
         ]
 
         if table_name not in allowed_tables:
@@ -7362,7 +7901,8 @@ def delete_table_record(table_name: str, record_id: str, admin_user: Dict[str, A
             'users', 'cookies', 'cookie_status', 'keywords', 'default_replies', 'default_reply_records',
             'ai_reply_settings', 'ai_conversations', 'ai_item_cache', 'item_info',
             'message_notifications', 'cards', 'delivery_rules', 'notification_channels',
-            'user_settings', 'system_settings', 'email_verifications', 'captcha_codes', 'orders','item_replay'
+            'user_settings', 'system_settings', 'email_verifications', 'captcha_codes', 'orders', 'item_replay',
+            'risk_control_logs', 'customer_service_send_audit_logs'
         ]
 
         if table_name not in allowed_tables:
@@ -7403,7 +7943,7 @@ def clear_table_data(table_name: str, admin_user: Dict[str, Any] = Depends(requi
             'ai_reply_settings', 'ai_conversations', 'ai_item_cache', 'item_info',
             'message_notifications', 'cards', 'delivery_rules', 'notification_channels',
             'user_settings', 'system_settings', 'email_verifications', 'captcha_codes', 'orders', 'item_replay',
-            'risk_control_logs'
+            'risk_control_logs', 'customer_service_send_audit_logs'
         ]
 
         # 不允许清空用户表

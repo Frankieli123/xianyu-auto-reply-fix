@@ -289,6 +289,22 @@ body.sidebar-collapsed .main-content {
   display: block;
 }
 
+/* 客服台页面特殊样式 - 使用flex布局填满高度 */
+#customer-service-section.active {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh);
+}
+
+#customer-service-section .content-header {
+  flex-shrink: 0;
+}
+
+#customer-service-section .content-body {
+  flex: 1;
+  overflow: hidden;
+}
+
 /* 在线客服页面特殊样式 - 使用flex布局填满高度 */
 #online-im-section.active {
   display: flex;
