@@ -44,13 +44,9 @@
   letter-spacing: 0.2px;
 }
 
-.cs-filter-row {
-  margin-top: 0.55rem;
-}
-
 .cs-conversation-list {
   overflow-y: auto;
-  padding: 0.65rem;
+  padding: 0.5rem;
 }
 
 .cs-conversation-list::-webkit-scrollbar,
@@ -98,10 +94,10 @@
 
 .cs-conversation-item {
   position: relative;
-  margin-top: 0.5rem;
-  padding: 0.65rem 0.72rem;
+  margin-top: 0.28rem;
+  padding: 0.44rem 0.54rem;
   border: 1px solid #e2e8f0;
-  border-radius: 12px;
+  border-radius: 9px;
   background: #ffffff;
   cursor: pointer;
   transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
@@ -134,12 +130,13 @@
   display: flex;
   justify-content: space-between;
   gap: 0.5rem;
-  margin-bottom: 0.35rem;
+  margin-bottom: 0.12rem;
 }
 
 .cs-conversation-name {
   flex: 1;
   font-weight: 700;
+  font-size: 0.8rem;
   color: #0f172a;
   min-width: 0;
   overflow: hidden;
@@ -149,7 +146,7 @@
 
 .cs-conversation-time {
   color: #64748b;
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   flex-shrink: 0;
 }
 
@@ -158,8 +155,8 @@
   background: transparent;
   color: #94a3b8;
   border-radius: 999px;
-  width: 24px;
-  height: 24px;
+  width: 20px;
+  height: 20px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -177,39 +174,11 @@
 
 .cs-conversation-preview {
   color: #334155;
-  font-size: 0.83rem;
+  font-size: 0.72rem;
+  line-height: 1.25;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.cs-conversation-meta {
-  margin-top: 0.38rem;
-  color: #64748b;
-  font-size: 0.72rem;
-}
-
-.cs-conversation-status {
-  display: inline-flex;
-  align-items: center;
-  border-radius: 999px;
-  font-size: 0.68rem;
-  font-weight: 700;
-  padding: 0.1rem 0.42rem;
-  margin-right: 0.36rem;
-  border: 1px solid transparent;
-}
-
-.cs-conversation-status.pending {
-  color: #9a3412;
-  background: #ffedd5;
-  border-color: #fed7aa;
-}
-
-.cs-conversation-status.replied {
-  color: #1e40af;
-  background: #dbeafe;
-  border-color: #bfdbfe;
 }
 
 .cs-conversation-header {
@@ -291,7 +260,7 @@
 
 .cs-message-meta {
   padding: 0.45rem 0.7rem 0.2rem;
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   color: #64748b;
 }
 
@@ -315,9 +284,10 @@
 .cs-message-content {
   padding: 0;
   color: #0f172a;
+  font-size: 0.86rem;
   white-space: pre-wrap;
   word-break: break-word;
-  line-height: 1.45;
+  line-height: 1.38;
 }
 
 .cs-message-row.out .cs-message-content {
@@ -339,7 +309,7 @@
 .cs-message-time {
   text-align: right;
   margin-top: 0.28rem;
-  font-size: 0.66rem;
+  font-size: 0.62rem;
   color: #94a3b8;
 }
 

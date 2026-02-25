@@ -80,98 +80,8 @@ BRUTE_FORCE_CONFIG = {
     'captcha_require_failures': 2,  # 失败多少次后需要验证码
 }
 
-# 客服台发送风控（仅作用于 /api/customer-service/send）
-CUSTOMER_SERVICE_SEND_GUARD_DEFAULTS = {
-    'min_interval_seconds': float(os.getenv('CS_SEND_MIN_INTERVAL_SECONDS', '1.5')),
-    'window_seconds': int(os.getenv('CS_SEND_WINDOW_SECONDS', '60')),
-    'max_messages_per_window': int(os.getenv('CS_SEND_MAX_MESSAGES_PER_WINDOW', '20')),
-    'duplicate_block_seconds': int(os.getenv('CS_SEND_DUPLICATE_BLOCK_SECONDS', '30')),
-    'max_message_length': int(os.getenv('CS_SEND_MAX_MESSAGE_LENGTH', '1000')),
-}
-CUSTOMER_SERVICE_SEND_GUARD_SETTING_KEYS = {
-    'min_interval_seconds': 'cs_send_min_interval_seconds',
-    'window_seconds': 'cs_send_window_seconds',
-    'max_messages_per_window': 'cs_send_max_messages_per_window',
-    'duplicate_block_seconds': 'cs_send_duplicate_block_seconds',
-    'max_message_length': 'cs_send_max_message_length',
-}
-CUSTOMER_SERVICE_SEND_GUARD_DESCRIPTIONS = {
-    'min_interval_seconds': '客服台发送风控：同会话最小发送间隔（秒）',
-    'window_seconds': '客服台发送风控：统计窗口时长（秒）',
-    'max_messages_per_window': '客服台发送风控：窗口内最大消息数',
-    'duplicate_block_seconds': '客服台发送风控：重复文本拦截时长（秒）',
-    'max_message_length': '客服台发送风控：文本最大长度（字符）',
-}
-CUSTOMER_SERVICE_SEND_GUARD_RANGES = {
-    'min_interval_seconds': (0.0, 30.0, 'float'),
-    'window_seconds': (5, 3600, 'int'),
-    'max_messages_per_window': (1, 500, 'int'),
-    'duplicate_block_seconds': (1, 3600, 'int'),
-    'max_message_length': (1, 5000, 'int'),
-}
-customer_service_send_lock = asyncio.Lock()
-customer_service_send_tracker = defaultdict(
-    lambda: {
-        'last_sent_at': 0.0,
-        'window_timestamps': [],
-        'last_text': '',
-        'last_text_at': 0.0,
-        'updated_at': 0.0
-    }
-)
-CUSTOMER_SERVICE_SEND_TRACKER_MAX_KEYS = int(os.getenv('CS_SEND_TRACKER_MAX_KEYS', '5000'))
-
-
 def _normalize_customer_service_text(text: str) -> str:
     return re.sub(r'\s+', ' ', str(text or '').strip())
-
-
-def normalize_customer_service_send_guard_config(raw: Dict[str, Any], base: Dict[str, Any] = None) -> Dict[str, Any]:
-    """归一化客服台发送风控配置（类型转换 + 区间裁剪）"""
-    config = dict(base or CUSTOMER_SERVICE_SEND_GUARD_DEFAULTS)
-    source = raw or {}
-
-    for key, (min_value, max_value, value_type) in CUSTOMER_SERVICE_SEND_GUARD_RANGES.items():
-        current_value = config.get(key, CUSTOMER_SERVICE_SEND_GUARD_DEFAULTS[key])
-        candidate = source.get(key, current_value)
-        try:
-            if value_type == 'float':
-                parsed = float(candidate)
-            else:
-                parsed = int(float(candidate))
-        except (TypeError, ValueError):
-            parsed = current_value
-
-        if parsed < min_value:
-            parsed = min_value
-        if parsed > max_value:
-            parsed = max_value
-
-        if value_type == 'int':
-            parsed = int(parsed)
-        config[key] = parsed
-
-    return config
-
-
-def load_customer_service_send_guard_config() -> Dict[str, Any]:
-    """从 system_settings 读取客服台发送风控配置"""
-    raw = {}
-    for config_key, setting_key in CUSTOMER_SERVICE_SEND_GUARD_SETTING_KEYS.items():
-        value = db_manager.get_system_setting(setting_key)
-        if value is not None:
-            raw[config_key] = value
-    return normalize_customer_service_send_guard_config(raw)
-
-
-def save_customer_service_send_guard_config(config: Dict[str, Any]) -> Dict[str, Any]:
-    """保存客服台发送风控配置到 system_settings，返回归一化结果"""
-    normalized = normalize_customer_service_send_guard_config(config)
-    for config_key, setting_key in CUSTOMER_SERVICE_SEND_GUARD_SETTING_KEYS.items():
-        value = normalized[config_key]
-        description = CUSTOMER_SERVICE_SEND_GUARD_DESCRIPTIONS.get(config_key, '')
-        db_manager.set_system_setting(setting_key, str(value), description)
-    return normalized
 
 
 def _build_customer_service_send_message_preview(message_type: str, message: str, image_url: str = '') -> str:
@@ -181,76 +91,6 @@ def _build_customer_service_send_message_preview(message_type: str, message: str
     if not text and image_url:
         text = f"[图片] {image_url}"
     return text[:200]
-
-
-async def check_and_record_customer_service_send_guard(
-    user_id: int,
-    cookie_id: str,
-    chat_id: str,
-    message_type: str,
-    message: str,
-    guard_config: Dict[str, Any]
-):
-    """客服台发送前检查并记录节流状态（内存级，进程内生效）"""
-    now = time.time()
-    key = f"{user_id}:{cookie_id}:{str(chat_id).split('@')[0]}"
-
-    min_interval_seconds = max(0.0, float(guard_config['min_interval_seconds']))
-    window_seconds = max(1, int(guard_config['window_seconds']))
-    max_messages_per_window = max(1, int(guard_config['max_messages_per_window']))
-    duplicate_block_seconds = max(1, int(guard_config['duplicate_block_seconds']))
-
-    async with customer_service_send_lock:
-        # 轻量清理：移除长时间未更新键，避免内存无上限增长
-        if len(customer_service_send_tracker) > CUSTOMER_SERVICE_SEND_TRACKER_MAX_KEYS:
-            stale_before = now - (window_seconds * 5)
-            stale_keys = [
-                k for k, v in customer_service_send_tracker.items()
-                if float(v.get('updated_at', 0.0) or 0.0) < stale_before
-            ]
-            for stale_key in stale_keys:
-                customer_service_send_tracker.pop(stale_key, None)
-
-        state = customer_service_send_tracker[key]
-        last_sent_at = float(state.get('last_sent_at', 0.0) or 0.0)
-        if last_sent_at > 0 and now - last_sent_at < min_interval_seconds:
-            remain = max(0.1, min_interval_seconds - (now - last_sent_at))
-            raise HTTPException(
-                status_code=429,
-                detail=f"发送过于频繁，请 {remain:.1f} 秒后重试"
-            )
-
-        valid_timestamps = [
-            ts for ts in state.get('window_timestamps', [])
-            if now - float(ts) <= window_seconds
-        ]
-        if len(valid_timestamps) >= max_messages_per_window:
-            raise HTTPException(
-                status_code=429,
-                detail=f"发送过于频繁，{window_seconds} 秒内最多发送 {max_messages_per_window} 条"
-            )
-
-        if message_type == 'text':
-            normalized_text = _normalize_customer_service_text(message)
-            if normalized_text:
-                last_text = str(state.get('last_text', '') or '')
-                last_text_at = float(state.get('last_text_at', 0.0) or 0.0)
-                if (
-                    normalized_text == last_text
-                    and last_text_at > 0
-                    and now - last_text_at < duplicate_block_seconds
-                ):
-                    raise HTTPException(
-                        status_code=429,
-                        detail=f"检测到重复消息，请 {duplicate_block_seconds} 秒后再发送相同内容"
-                    )
-                state['last_text'] = normalized_text
-                state['last_text_at'] = now
-
-        valid_timestamps.append(now)
-        state['window_timestamps'] = valid_timestamps
-        state['last_sent_at'] = now
-        state['updated_at'] = now
 
 
 def cleanup_login_trackers():
@@ -1737,15 +1577,6 @@ class CustomerServiceSendRequest(BaseModel):
     image_url: Optional[str] = ''
 
 
-class CustomerServiceSendGuardConfigRequest(BaseModel):
-    min_interval_seconds: Optional[float] = None
-    window_seconds: Optional[int] = None
-    max_messages_per_window: Optional[int] = None
-    duplicate_block_seconds: Optional[int] = None
-    max_message_length: Optional[int] = None
-    use_defaults: Optional[bool] = False
-
-
 def normalize_im_id(value: str) -> str:
     if value is None:
         return ''
@@ -1993,41 +1824,6 @@ def get_customer_service_order_info(
     }
 
 
-@app.get('/admin/customer-service/send-guard-config')
-def get_customer_service_send_guard_config(admin_user: Dict[str, Any] = Depends(require_admin)):
-    config = load_customer_service_send_guard_config()
-    return {
-        'success': True,
-        'data': config,
-        'defaults': normalize_customer_service_send_guard_config(CUSTOMER_SERVICE_SEND_GUARD_DEFAULTS),
-        'ranges': {
-            key: {'min': rule[0], 'max': rule[1], 'type': rule[2]}
-            for key, rule in CUSTOMER_SERVICE_SEND_GUARD_RANGES.items()
-        }
-    }
-
-
-@app.put('/admin/customer-service/send-guard-config')
-def update_customer_service_send_guard_config(
-    request: CustomerServiceSendGuardConfigRequest,
-    admin_user: Dict[str, Any] = Depends(require_admin)
-):
-    if request.use_defaults:
-        saved = save_customer_service_send_guard_config(CUSTOMER_SERVICE_SEND_GUARD_DEFAULTS)
-        return {'success': True, 'message': '已恢复默认风控配置', 'data': saved}
-
-    current = load_customer_service_send_guard_config()
-    patch_data = {}
-    for key in CUSTOMER_SERVICE_SEND_GUARD_RANGES.keys():
-        value = getattr(request, key)
-        if value is not None:
-            patch_data[key] = value
-
-    merged = normalize_customer_service_send_guard_config(patch_data, base=current)
-    saved = save_customer_service_send_guard_config(merged)
-    return {'success': True, 'message': '风控配置已更新', 'data': saved}
-
-
 @app.get('/admin/customer-service/send-audit-logs')
 def get_customer_service_send_audit_logs(
     user_id: Optional[int] = None,
@@ -2111,7 +1907,6 @@ async def send_customer_service_message(
     normalized_message_type = str(request.message_type or 'text').strip().lower()
     normalized_message = str(request.message or '')
     normalized_image_url = str(request.image_url or '').strip()
-    guard_config = load_customer_service_send_guard_config()
     audit_logged = False
     message_preview = _build_customer_service_send_message_preview(
         normalized_message_type,
@@ -2170,14 +1965,6 @@ async def send_customer_service_message(
         if normalized_message_type == 'image':
             if not normalized_image_url:
                 reject("image_url 不能为空")
-            await check_and_record_customer_service_send_guard(
-                user_id=current_user['user_id'],
-                cookie_id=normalized_cookie_id,
-                chat_id=normalized_chat_id,
-                message_type='image',
-                message=normalized_image_url,
-                guard_config=guard_config
-            )
             await live_instance.send_image_msg(
                 live_instance.ws,
                 normalized_chat_id,
@@ -2189,17 +1976,6 @@ async def send_customer_service_message(
             normalized_text = normalized_message.strip()
             if not normalized_text:
                 reject("message 不能为空")
-            max_message_length = max(1, int(guard_config['max_message_length']))
-            if len(normalized_text) > max_message_length:
-                reject(f"message 过长，最多 {max_message_length} 字符")
-            await check_and_record_customer_service_send_guard(
-                user_id=current_user['user_id'],
-                cookie_id=normalized_cookie_id,
-                chat_id=normalized_chat_id,
-                message_type='text',
-                message=normalized_text,
-                guard_config=guard_config
-            )
             await live_instance.send_msg(
                 live_instance.ws,
                 normalized_chat_id,
@@ -6143,8 +5919,15 @@ def create_delivery_rule(rule_data: dict, current_user: Dict[str, Any] = Depends
     try:
         from db_manager import db_manager
         user_id = current_user['user_id']
+        keyword = (rule_data.get('keyword') or '').strip()
+        item_id = (rule_data.get('item_id') or '').strip()
+
+        if not keyword and not item_id:
+            raise HTTPException(status_code=400, detail="商品关键字和商品ID至少填写一个")
+
         rule_id = db_manager.create_delivery_rule(
-            keyword=rule_data.get('keyword'),
+            keyword=keyword,
+            item_id=item_id or None,
             card_id=rule_data.get('card_id'),
             delivery_count=rule_data.get('delivery_count', 1),
             enabled=rule_data.get('enabled', True),
@@ -6152,6 +5935,8 @@ def create_delivery_rule(rule_data: dict, current_user: Dict[str, Any] = Depends
             user_id=user_id
         )
         return {"id": rule_id, "message": "发货规则创建成功"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -6177,9 +5962,16 @@ def update_delivery_rule(rule_id: int, rule_data: dict, current_user: Dict[str, 
     try:
         from db_manager import db_manager
         user_id = current_user['user_id']
+        keyword = (rule_data.get('keyword') or '').strip()
+        item_id = (rule_data.get('item_id') or '').strip()
+
+        if not keyword and not item_id:
+            raise HTTPException(status_code=400, detail="商品关键字和商品ID至少填写一个")
+
         success = db_manager.update_delivery_rule(
             rule_id=rule_id,
-            keyword=rule_data.get('keyword'),
+            keyword=keyword,
+            item_id=item_id,
             card_id=rule_data.get('card_id'),
             delivery_count=rule_data.get('delivery_count', 1),
             enabled=rule_data.get('enabled', True),
@@ -6190,6 +5982,8 @@ def update_delivery_rule(rule_id: int, rule_data: dict, current_user: Dict[str, 
             return {"message": "发货规则更新成功"}
         else:
             raise HTTPException(status_code=404, detail="发货规则不存在")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -8193,7 +7987,8 @@ def get_dashboard_sales(
 
         def match_delivery_rule(order: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             item_title = (order.get('_item_title') or '').strip()
-            if not item_title:
+            item_id = str(order.get('item_id') or '').strip()
+            if not item_title and not item_id:
                 return None
 
             def keyword_matches(keyword: str) -> bool:
@@ -8201,14 +7996,27 @@ def get_dashboard_sales(
                     return False
                 return keyword in item_title or item_title in keyword
 
+            matched_by_item_id = False
             candidates = []
-            for rule in all_rules:
-                keyword = str(rule.get('keyword') or '').strip()
-                if not keyword:
-                    continue
-                if not keyword_matches(keyword):
-                    continue
-                candidates.append(rule)
+
+            if item_id:
+                candidates = [
+                    rule for rule in all_rules
+                    if str(rule.get('item_id') or '').strip() == item_id
+                ]
+                matched_by_item_id = bool(candidates)
+
+            if not candidates and item_title:
+                for rule in all_rules:
+                    rule_item_id = str(rule.get('item_id') or '').strip()
+                    if rule_item_id:
+                        continue
+                    keyword = str(rule.get('keyword') or '').strip()
+                    if not keyword:
+                        continue
+                    if not keyword_matches(keyword):
+                        continue
+                    candidates.append(rule)
 
             if not candidates:
                 return None
@@ -8247,14 +8055,22 @@ def get_dashboard_sales(
                 if normal_matches:
                     candidates = normal_matches
 
-            candidates.sort(
-                key=lambda rule: (
-                    1 if str(rule.get('keyword') or '') in item_title else 0,
-                    len(str(rule.get('keyword') or '')),
-                    -(rule.get('delivery_times') or 0)
-                ),
-                reverse=True
-            )
+            if matched_by_item_id:
+                candidates.sort(
+                    key=lambda rule: (
+                        rule.get('delivery_times') or 0,
+                        rule.get('id') or 0
+                    )
+                )
+            else:
+                candidates.sort(
+                    key=lambda rule: (
+                        1 if str(rule.get('keyword') or '') in item_title else 0,
+                        len(str(rule.get('keyword') or '')),
+                        -(rule.get('delivery_times') or 0)
+                    ),
+                    reverse=True
+                )
             return candidates[0] if candidates else None
 
         def calculate_order_profit(order: Dict[str, Any]) -> float:

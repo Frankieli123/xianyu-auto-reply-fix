@@ -1129,7 +1129,7 @@
           <i class="bi bi-truck me-2"></i>
           自动发货
         </h2>
-        <p class="text-muted mb-0">根据商品关键字自动匹配卡券进行发货</p>
+        <p class="text-muted mb-0">根据商品ID或商品关键字自动匹配卡券进行发货</p>
       </div>
       <div class="content-body">
         <!-- 发货规则列表 -->
@@ -1147,7 +1147,7 @@
                   <table class="table table-hover">
                     <thead>
                       <tr>
-                        <th>商品关键字</th>
+                        <th>匹配条件</th>
                         <th>匹配卡券</th>
                         <th>卡券类型</th>
                         <!-- <th>发货数量</th> 隐藏发货数量列 -->
@@ -1158,7 +1158,7 @@
                     </thead>
                     <tbody id="deliveryRulesTableBody">
                       <tr>
-                        <td colspan="7" class="text-center py-4 text-muted">
+                        <td colspan="6" class="text-center py-4 text-muted">
                           <i class="bi bi-truck fs-1 d-block mb-3"></i>
                           <h5>暂无发货规则</h5>
                           <p class="mb-0">点击"添加规则"开始配置自动发货规则</p>
@@ -2235,14 +2235,6 @@
                 placeholder="搜索账号、昵称、用户ID或聊天ID"
                 oninput="filterCustomerServiceConversations()"
               >
-              <div class="cs-filter-row">
-                <select class="form-select form-select-sm" id="csConversationStatusFilter" onchange="filterCustomerServiceConversations()">
-                  <option value="all">全部会话</option>
-                  <option value="pending">待回复</option>
-                  <option value="replied">已回复</option>
-                  <option value="starred">仅星标</option>
-                </select>
-              </div>
             </div>
             <div id="csAccountConversationList" class="cs-conversation-list"></div>
           </aside>
@@ -2647,56 +2639,6 @@
                     </button>
                   </div>
                 </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 客服发送风控配置（仅管理员可见） -->
-        <div id="customer-service-send-guard-settings" class="row mt-4" style="display: none;">
-          <div class="col-12">
-            <div class="card">
-              <div class="card-header">
-                <i class="bi bi-shield-check me-2"></i>客服发送风控
-                <span class="badge bg-warning ms-2">管理员专用</span>
-              </div>
-              <div class="card-body">
-                <div class="row g-3">
-                  <div class="col-md-4">
-                    <label for="csGuardMinInterval" class="form-label">最小发送间隔(秒)</label>
-                    <input type="number" class="form-control" id="csGuardMinInterval" step="0.1" min="0" max="30">
-                    <div class="form-text">同账号同会话两次发送的最小间隔。</div>
-                  </div>
-                  <div class="col-md-4">
-                    <label for="csGuardWindowSeconds" class="form-label">统计窗口(秒)</label>
-                    <input type="number" class="form-control" id="csGuardWindowSeconds" min="5" max="3600">
-                    <div class="form-text">频控窗口时长。</div>
-                  </div>
-                  <div class="col-md-4">
-                    <label for="csGuardMaxMessages" class="form-label">窗口内最多发送条数</label>
-                    <input type="number" class="form-control" id="csGuardMaxMessages" min="1" max="500">
-                    <div class="form-text">超过会触发429限制。</div>
-                  </div>
-                  <div class="col-md-6">
-                    <label for="csGuardDuplicateBlock" class="form-label">重复文本拦截时长(秒)</label>
-                    <input type="number" class="form-control" id="csGuardDuplicateBlock" min="1" max="3600">
-                    <div class="form-text">相同文本在该时间内禁止重复发送。</div>
-                  </div>
-                  <div class="col-md-6">
-                    <label for="csGuardMaxMessageLength" class="form-label">文本最大长度(字符)</label>
-                    <input type="number" class="form-control" id="csGuardMaxMessageLength" min="1" max="5000">
-                    <div class="form-text">超长文本将被拒绝发送。</div>
-                  </div>
-                </div>
-                <div class="d-flex gap-2 mt-3">
-                  <button type="button" class="btn btn-primary" onclick="saveCustomerServiceSendGuardSettings()">
-                    <i class="bi bi-check-circle me-1"></i>保存风控配置
-                  </button>
-                  <button type="button" class="btn btn-outline-secondary" onclick="resetCustomerServiceSendGuardSettings()">
-                    <i class="bi bi-arrow-counterclockwise me-1"></i>恢复默认
-                  </button>
-                </div>
-                <div id="csGuardStatus" class="alert alert-info mt-3 mb-0 py-2" style="display: none;"></div>
               </div>
             </div>
           </div>
@@ -4003,9 +3945,16 @@
         <div class="modal-body">
           <form id="addDeliveryRuleForm">
             <div class="mb-3">
-              <label class="form-label">商品关键字 <span class="text-danger">*</span></label>
-              <input type="text" class="form-control" id="productKeyword" placeholder="例如：游戏点卡、会员卡等" required>
-              <small class="form-text text-muted">当商品标题包含此关键字时触发自动发货</small>
+              <label class="form-label">商品关键字 <small class="text-muted">(可选)</small></label>
+              <input type="text" class="form-control" id="productKeyword" placeholder="例如：游戏点卡、会员卡等">
+              <small class="form-text text-muted">通用规则：当商品标题/详情包含关键字时匹配</small>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">指定商品ID <small class="text-muted">(可选)</small></label>
+              <select class="form-select" id="ruleItemId">
+                <option value="">不指定商品（使用关键字匹配）</option>
+              </select>
+              <small class="form-text text-muted">商品ID规则优先于关键字规则；商品ID与关键字至少填写一个</small>
             </div>
             <div class="mb-3">
               <label class="form-label">匹配卡券 <span class="text-danger">*</span></label>
@@ -4052,9 +4001,16 @@
           <form id="editDeliveryRuleForm">
             <input type="hidden" id="editRuleId">
             <div class="mb-3">
-              <label class="form-label">商品关键字 <span class="text-danger">*</span></label>
-              <input type="text" class="form-control" id="editProductKeyword" required>
-              <small class="form-text text-muted">当商品标题包含此关键字时触发自动发货</small>
+              <label class="form-label">商品关键字 <small class="text-muted">(可选)</small></label>
+              <input type="text" class="form-control" id="editProductKeyword">
+              <small class="form-text text-muted">通用规则：当商品标题/详情包含关键字时匹配</small>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">指定商品ID <small class="text-muted">(可选)</small></label>
+              <select class="form-select" id="editRuleItemId">
+                <option value="">不指定商品（使用关键字匹配）</option>
+              </select>
+              <small class="form-text text-muted">商品ID规则优先于关键字规则；商品ID与关键字至少填写一个</small>
             </div>
             <div class="mb-3">
               <label class="form-label">匹配卡券 <span class="text-danger">*</span></label>

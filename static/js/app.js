@@ -1922,10 +1922,10 @@ async function loadCookies() {
             closed: '已关闭'
         };
         const runtimeStateText = runtimeStateMap[runtimeStateRaw] || runtimeStateRaw || '';
-        const runtimeStateHtml = runtimeStateText ? `<small class="text-muted d-block mt-1">${runtimeStateText}</small>` : '';
         const connectionBadgeClass = cookieHealthy ? 'bg-success' : 'bg-danger';
-        const connectionBadgeText = cookieHealthy ? 'Cookie正常' : 'Cookie异常';
-        const connectionTips = [`Cookie: ${connectionBadgeText}`];
+        const cookieHealthText = cookieHealthy ? 'Cookie正常' : 'Cookie异常';
+        const connectionBadgeText = runtimeStateText || '未连接';
+        const connectionTips = [`Cookie: ${cookieHealthText}`];
         if (!cookieHealthy && missingFields.length > 0) {
             connectionTips.push(`缺失字段: ${missingFields.join(', ')}`);
         }
@@ -1965,7 +1965,6 @@ async function loadCookies() {
             <span class="badge ${connectionBadgeClass}" title="${connectionTooltip}">
             ${connectionBadgeText}
             </span>
-            ${runtimeStateHtml}
         </td>
         <td class="align-middle">
             ${defaultReplyBadge}
@@ -5934,7 +5933,7 @@ function renderDeliveryRulesList(rules) {
     if (rules.length === 0) {
     tbody.innerHTML = `
         <tr>
-        <td colspan="7" class="text-center py-4 text-muted">
+        <td colspan="6" class="text-center py-4 text-muted">
             <i class="bi bi-truck fs-1 d-block mb-3"></i>
             <h5>暂无发货规则</h5>
             <p class="mb-0">点击"添加规则"开始配置自动发货规则</p>
@@ -5948,6 +5947,19 @@ function renderDeliveryRulesList(rules) {
 
     rules.forEach(rule => {
     const tr = document.createElement('tr');
+    const ruleKeyword = (rule.keyword || '').trim();
+    const ruleItemId = (rule.item_id || '').trim();
+
+    let conditionHtml = '';
+    if (ruleItemId) {
+        conditionHtml += `<div><span class="badge bg-dark me-1">商品ID</span><code>${escapeHtml(ruleItemId)}</code></div>`;
+    }
+    if (ruleKeyword) {
+        conditionHtml += `<div class="${ruleItemId ? 'mt-1' : ''}"><span class="badge bg-secondary me-1">关键词</span>${escapeHtml(ruleKeyword)}</div>`;
+    }
+    if (!conditionHtml) {
+        conditionHtml = '<div class="text-muted">未设置匹配条件</div>';
+    }
 
     // 状态标签
     const statusBadge = rule.enabled ?
@@ -5978,7 +5990,7 @@ function renderDeliveryRulesList(rules) {
 
     tr.innerHTML = `
         <td>
-        <div class="fw-bold">${rule.keyword}</div>
+        <div class="fw-bold">${conditionHtml}</div>
         ${rule.description ? `<small class="text-muted">${rule.description}</small>` : ''}
         </td>
         <td>
@@ -6050,9 +6062,12 @@ async function refreshTodayDeliveryCount() {
 }
 
 // 显示添加发货规则模态框
-function showAddDeliveryRuleModal() {
+async function showAddDeliveryRuleModal() {
     document.getElementById('addDeliveryRuleForm').reset();
-    loadCardsForSelect(); // 加载卡券选项
+    await Promise.all([
+        loadCardsForSelect(),
+        loadDeliveryRuleItemsForSelect('ruleItemId')
+    ]);
     const modal = new bootstrap.Modal(document.getElementById('addDeliveryRuleModal'));
     modal.show();
 }
@@ -6120,22 +6135,92 @@ async function loadCardsForSelect() {
     }
 }
 
+// 加载商品列表用于发货规则商品ID选择
+async function loadDeliveryRuleItemsForSelect(selectId, selectedItemId = '') {
+    const select = document.getElementById(selectId);
+    if (!select) {
+        return;
+    }
+
+    const preserveValue = selectedItemId || select.value || '';
+    select.innerHTML = '<option value="">不指定商品（使用关键字匹配）</option>';
+
+    try {
+        const response = await fetch(`${apiBase}/items`, {
+            headers: {
+                'Authorization': `Bearer ${authToken}`
+            }
+        });
+
+        if (!response.ok) {
+            if (preserveValue) {
+                const fallbackOption = document.createElement('option');
+                fallbackOption.value = preserveValue;
+                fallbackOption.textContent = `${preserveValue} (当前规则商品ID)`;
+                select.appendChild(fallbackOption);
+                select.value = preserveValue;
+            }
+            return;
+        }
+
+        const data = await response.json();
+        const items = Array.isArray(data.items) ? data.items : [];
+        const seen = new Set();
+
+        items.forEach(item => {
+            const itemId = (item.item_id || '').trim();
+            if (!itemId || seen.has(itemId)) {
+                return;
+            }
+            seen.add(itemId);
+
+            const title = (item.item_title || '').trim();
+            const option = document.createElement('option');
+            option.value = itemId;
+            option.textContent = title ? `${itemId} - ${title}` : itemId;
+            select.appendChild(option);
+        });
+
+        if (preserveValue) {
+            const found = Array.from(select.options).some(opt => opt.value === preserveValue);
+            if (!found) {
+                const fallbackOption = document.createElement('option');
+                fallbackOption.value = preserveValue;
+                fallbackOption.textContent = `${preserveValue} (当前规则商品ID)`;
+                select.appendChild(fallbackOption);
+            }
+            select.value = preserveValue;
+        }
+    } catch (error) {
+        console.error('加载发货规则商品列表失败:', error);
+        if (preserveValue) {
+            const fallbackOption = document.createElement('option');
+            fallbackOption.value = preserveValue;
+            fallbackOption.textContent = `${preserveValue} (当前规则商品ID)`;
+            select.appendChild(fallbackOption);
+            select.value = preserveValue;
+        }
+    }
+}
+
 // 保存发货规则
 async function saveDeliveryRule() {
     try {
-    const keyword = document.getElementById('productKeyword').value;
+    const keyword = document.getElementById('productKeyword').value.trim();
+    const itemId = (document.getElementById('ruleItemId')?.value || '').trim();
     const cardId = document.getElementById('selectedCard').value;
     const deliveryCount = document.getElementById('deliveryCount').value || 1;
     const enabled = document.getElementById('ruleEnabled').checked;
     const description = document.getElementById('ruleDescription').value;
 
-    if (!keyword || !cardId) {
-        showToast('请填写必填字段', 'warning');
+    if ((!keyword && !itemId) || !cardId) {
+        showToast('请至少填写商品关键字或商品ID，并选择卡券', 'warning');
         return;
     }
 
     const ruleData = {
         keyword: keyword,
+        item_id: itemId || null,
         card_id: parseInt(cardId),
         delivery_count: parseInt(deliveryCount),
         enabled: enabled,
@@ -6544,14 +6629,18 @@ async function editDeliveryRule(ruleId) {
 
         // 填充编辑表单
         document.getElementById('editRuleId').value = rule.id;
-        document.getElementById('editProductKeyword').value = rule.keyword;
+        document.getElementById('editProductKeyword').value = rule.keyword || '';
         document.getElementById('editDeliveryCount').value = rule.delivery_count || 1;
         document.getElementById('editRuleEnabled').checked = rule.enabled;
         document.getElementById('editRuleDescription').value = rule.description || '';
 
-        // 加载卡券选项并设置当前选中的卡券
-        await loadCardsForEditSelect();
+        // 加载卡券和商品选项并设置当前值
+        await Promise.all([
+            loadCardsForEditSelect(),
+            loadDeliveryRuleItemsForSelect('editRuleItemId', rule.item_id || '')
+        ]);
         document.getElementById('editSelectedCard').value = rule.card_id;
+        document.getElementById('editRuleItemId').value = rule.item_id || '';
 
         // 显示模态框
         const modal = new bootstrap.Modal(document.getElementById('editDeliveryRuleModal'));
@@ -6632,19 +6721,21 @@ async function loadCardsForEditSelect() {
 async function updateDeliveryRule() {
     try {
     const ruleId = document.getElementById('editRuleId').value;
-    const keyword = document.getElementById('editProductKeyword').value;
+    const keyword = document.getElementById('editProductKeyword').value.trim();
+    const itemId = (document.getElementById('editRuleItemId')?.value || '').trim();
     const cardId = document.getElementById('editSelectedCard').value;
     const deliveryCount = document.getElementById('editDeliveryCount').value || 1;
     const enabled = document.getElementById('editRuleEnabled').checked;
     const description = document.getElementById('editRuleDescription').value;
 
-    if (!keyword || !cardId) {
-        showToast('请填写必填字段', 'warning');
+    if ((!keyword && !itemId) || !cardId) {
+        showToast('请至少填写商品关键字或商品ID，并选择卡券', 'warning');
         return;
     }
 
     const ruleData = {
         keyword: keyword,
+        item_id: itemId,
         card_id: parseInt(cardId),
         delivery_count: parseInt(deliveryCount),
         enabled: enabled,
@@ -10887,7 +10978,6 @@ async function loadSystemSettings() {
             const loginInfoSettings = document.getElementById('login-info-settings');
             const outgoingConfigs = document.getElementById('outgoing-configs');
             const backupManagement = document.getElementById('backup-management');
-            const csSendGuardSettings = document.getElementById('customer-service-send-guard-settings');
             const systemRestartBtn = document.getElementById('system-restart-btn');
 
             if (apiSecuritySettings) {
@@ -10902,9 +10992,6 @@ async function loadSystemSettings() {
             if (backupManagement) {
                 backupManagement.style.display = isAdmin ? 'block' : 'none';
             }
-            if (csSendGuardSettings) {
-                csSendGuardSettings.style.display = isAdmin ? 'flex' : 'none';
-            }
             if (systemRestartBtn) {
                 systemRestartBtn.style.display = isAdmin ? 'inline-block' : 'none';
             }
@@ -10915,19 +11002,14 @@ async function loadSystemSettings() {
                 await loadRegistrationSettings();
                 await loadLoginInfoSettings();
                 await loadOutgoingConfigs();
-                await loadCustomerServiceSendGuardSettings();
             }
         }
     } catch (error) {
         console.error('获取用户信息失败:', error);
         // 出错时隐藏管理员功能
         const loginInfoSettings = document.getElementById('login-info-settings');
-        const csSendGuardSettings = document.getElementById('customer-service-send-guard-settings');
         if (loginInfoSettings) {
             loginInfoSettings.style.display = 'none';
-        }
-        if (csSendGuardSettings) {
-            csSendGuardSettings.style.display = 'none';
         }
     }
 }
@@ -10954,126 +11036,6 @@ async function loadAPISecuritySettings() {
     } catch (error) {
         console.error('加载API安全设置失败:', error);
         showToast('加载API安全设置失败', 'danger');
-    }
-}
-
-let customerServiceSendGuardDefaults = null;
-
-function populateCustomerServiceSendGuardForm(config = {}) {
-    const minIntervalInput = document.getElementById('csGuardMinInterval');
-    const windowInput = document.getElementById('csGuardWindowSeconds');
-    const maxMessagesInput = document.getElementById('csGuardMaxMessages');
-    const duplicateBlockInput = document.getElementById('csGuardDuplicateBlock');
-    const maxLengthInput = document.getElementById('csGuardMaxMessageLength');
-
-    if (minIntervalInput) minIntervalInput.value = config.min_interval_seconds ?? '';
-    if (windowInput) windowInput.value = config.window_seconds ?? '';
-    if (maxMessagesInput) maxMessagesInput.value = config.max_messages_per_window ?? '';
-    if (duplicateBlockInput) duplicateBlockInput.value = config.duplicate_block_seconds ?? '';
-    if (maxLengthInput) maxLengthInput.value = config.max_message_length ?? '';
-}
-
-function showCustomerServiceSendGuardStatus(text, level = 'info') {
-    const statusEl = document.getElementById('csGuardStatus');
-    if (!statusEl) return;
-
-    statusEl.className = `alert alert-${level} mt-3 mb-0 py-2`;
-    statusEl.textContent = text;
-    statusEl.style.display = 'block';
-
-    setTimeout(() => {
-        statusEl.style.display = 'none';
-    }, 3000);
-}
-
-async function loadCustomerServiceSendGuardSettings() {
-    try {
-        const response = await fetch('/admin/customer-service/send-guard-config', {
-            headers: {
-                'Authorization': `Bearer ${authToken}`
-            }
-        });
-        if (!response.ok) return;
-
-        const result = await response.json();
-        if (!result.success) return;
-
-        customerServiceSendGuardDefaults = result.defaults || null;
-        populateCustomerServiceSendGuardForm(result.data || {});
-    } catch (error) {
-        console.error('加载客服发送风控配置失败:', error);
-    }
-}
-
-function readCustomerServiceSendGuardForm() {
-    const minInterval = parseFloat(document.getElementById('csGuardMinInterval')?.value || '');
-    const windowSeconds = parseInt(document.getElementById('csGuardWindowSeconds')?.value || '', 10);
-    const maxMessages = parseInt(document.getElementById('csGuardMaxMessages')?.value || '', 10);
-    const duplicateBlock = parseInt(document.getElementById('csGuardDuplicateBlock')?.value || '', 10);
-    const maxLength = parseInt(document.getElementById('csGuardMaxMessageLength')?.value || '', 10);
-
-    return {
-        min_interval_seconds: Number.isNaN(minInterval) ? null : minInterval,
-        window_seconds: Number.isNaN(windowSeconds) ? null : windowSeconds,
-        max_messages_per_window: Number.isNaN(maxMessages) ? null : maxMessages,
-        duplicate_block_seconds: Number.isNaN(duplicateBlock) ? null : duplicateBlock,
-        max_message_length: Number.isNaN(maxLength) ? null : maxLength
-    };
-}
-
-async function saveCustomerServiceSendGuardSettings() {
-    const payload = readCustomerServiceSendGuardForm();
-    const invalid = Object.values(payload).some(v => v === null);
-    if (invalid) {
-        showToast('请完整填写风控参数', 'warning');
-        return;
-    }
-
-    try {
-        const response = await fetch('/admin/customer-service/send-guard-config', {
-            method: 'PUT',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${authToken}`
-            },
-            body: JSON.stringify(payload)
-        });
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok || !result.success) {
-            showToast(result.detail || result.message || '保存失败', 'danger');
-            return;
-        }
-        populateCustomerServiceSendGuardForm(result.data || payload);
-        showToast('客服发送风控配置已保存', 'success');
-        showCustomerServiceSendGuardStatus('风控配置保存成功', 'success');
-    } catch (error) {
-        console.error('保存客服发送风控配置失败:', error);
-        showToast('保存客服发送风控配置失败', 'danger');
-    }
-}
-
-async function resetCustomerServiceSendGuardSettings() {
-    if (!confirm('确定恢复客服发送风控为默认配置吗？')) return;
-    try {
-        const response = await fetch('/admin/customer-service/send-guard-config', {
-            method: 'PUT',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${authToken}`
-            },
-            body: JSON.stringify({ use_defaults: true })
-        });
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok || !result.success) {
-            showToast(result.detail || result.message || '恢复默认失败', 'danger');
-            return;
-        }
-        populateCustomerServiceSendGuardForm(result.data || customerServiceSendGuardDefaults || {});
-        showToast('已恢复默认风控配置', 'success');
-        showCustomerServiceSendGuardStatus('已恢复默认配置', 'info');
-    } catch (error) {
-        console.error('恢复客服发送风控默认配置失败:', error);
-        showToast('恢复默认配置失败', 'danger');
     }
 }
 
@@ -16086,11 +16048,6 @@ function getCustomerServiceSelectedConversation() {
     return null;
 }
 
-function getCustomerServiceConversationStatus(conversation) {
-    const lastDirection = String(conversation?.last_message_direction || 'in').toLowerCase();
-    return lastDirection === 'out' ? 'replied' : 'pending';
-}
-
 function isCustomerServiceMobile() {
     return window.matchMedia('(max-width: 768px)').matches;
 }
@@ -16668,13 +16625,12 @@ function renderCustomerServiceConversationList() {
     const container = document.getElementById('csAccountConversationList');
     const statsEl = document.getElementById('csConversationStats');
     const searchInput = document.getElementById('csConversationSearch');
-    const statusSelect = document.getElementById('csConversationStatusFilter');
     if (!container) return;
 
     const keyword = (searchInput?.value || '').trim().toLowerCase();
-    const selectedStatus = String(statusSelect?.value || 'all');
     let totalVisibleConversations = 0;
     let totalStarredConversations = 0;
+    const allVisibleConversations = [];
 
     if (!customerServiceState.accounts.length) {
         container.innerHTML = `
@@ -16687,73 +16643,69 @@ function renderCustomerServiceConversationList() {
         return;
     }
 
-    const html = customerServiceState.accounts.map(account => {
+    for (const account of customerServiceState.accounts) {
         const allConversations = account.conversations || [];
-        const filteredConversations = allConversations.filter(conv => {
-            const status = getCustomerServiceConversationStatus(conv);
+        for (const conv of allConversations) {
             const isStarred = isCustomerServiceConversationStarred(account.id, conv.chat_id);
             if (isStarred) totalStarredConversations += 1;
 
-            if (selectedStatus === 'pending' && status !== 'pending') return false;
-            if (selectedStatus === 'replied' && status !== 'replied') return false;
-            if (selectedStatus === 'starred' && !isStarred) return false;
-
-            if (!keyword) return true;
+            if (!keyword) {
+                allVisibleConversations.push({ accountId: account.id, conv, isStarred });
+                continue;
+            }
             const text = [account.id, conv.peer_user_name, conv.peer_user_id, conv.chat_id, conv.last_message_preview].join(' ').toLowerCase();
-            return text.includes(keyword);
-        });
+            if (text.includes(keyword)) {
+                allVisibleConversations.push({ accountId: account.id, conv, isStarred });
+            }
+        }
+    }
 
-        totalVisibleConversations += filteredConversations.length;
+    allVisibleConversations.sort(
+        (a, b) => Number(b?.conv?.last_message_time || 0) - Number(a?.conv?.last_message_time || 0)
+    );
+    totalVisibleConversations = allVisibleConversations.length;
+    if (!totalVisibleConversations) {
+        container.innerHTML = `
+            <div class="cs-empty-state">
+                <i class="bi bi-search"></i>
+                <p>无匹配会话</p>
+            </div>
+        `;
+        if (statsEl) {
+            statsEl.textContent = `0 条会话 / 星标 ${totalStarredConversations}`;
+        }
+        return;
+    }
 
-        const conversationItems = filteredConversations.map(conv => {
-            const isActive =
-                String(account.id) === String(customerServiceState.selectedCookieId) &&
-                String(conv.chat_id) === String(customerServiceState.selectedChatId);
-            const encodedCookieId = encodeURIComponent(account.id);
-            const encodedChatId = encodeURIComponent(conv.chat_id || '');
-            const encodedPeerId = encodeURIComponent(conv.peer_user_id || '');
-            const encodedPeerName = encodeURIComponent(conv.peer_user_name || '');
-            const conversationStatus = getCustomerServiceConversationStatus(conv);
-            const isStarred = isCustomerServiceConversationStarred(account.id, conv.chat_id);
-            const starIconClass = isStarred ? 'bi-star-fill' : 'bi-star';
-            const statusLabel = conversationStatus === 'pending' ? '待回复' : '已回复';
-            return `
-                <div
-                    class="cs-conversation-item ${isActive ? 'active' : ''}"
-                    onclick="selectCustomerServiceConversation('${encodedCookieId}','${encodedChatId}','${encodedPeerId}','${encodedPeerName}')"
-                >
-                    <div class="cs-conversation-top">
-                        <div class="cs-conversation-name">${escapeCustomerServiceHtml(conv.peer_user_name || conv.peer_user_id || '未知用户')}</div>
-                        <div class="d-flex align-items-center gap-1">
-                            <button
-                                type="button"
-                                class="cs-conversation-star ${isStarred ? 'active' : ''}"
-                                title="${isStarred ? '取消星标' : '设为星标'}"
-                                onclick="toggleCustomerServiceConversationStar(event,'${encodedCookieId}','${encodedChatId}')"
-                            >
-                                <i class="bi ${starIconClass}"></i>
-                            </button>
-                            <div class="cs-conversation-time">${escapeCustomerServiceHtml(formatCustomerServiceTime(conv.last_message_time))}</div>
-                        </div>
-                    </div>
-                    <div class="cs-conversation-preview">${escapeCustomerServiceHtml(conv.last_message_preview || '')}</div>
-                    <div class="cs-conversation-meta">
-                        <span class="cs-conversation-status ${conversationStatus}">${statusLabel}</span>
-                        UID: ${escapeCustomerServiceHtml(conv.peer_user_id || '-')} | Chat: ${escapeCustomerServiceHtml(conv.chat_id || '-')}
-                    </div>
-                </div>
-            `;
-        }).join('');
-
+    const html = allVisibleConversations.map(({ accountId, conv, isStarred }) => {
+        const isActive =
+            String(accountId) === String(customerServiceState.selectedCookieId) &&
+            String(conv.chat_id) === String(customerServiceState.selectedChatId);
+        const encodedCookieId = encodeURIComponent(accountId);
+        const encodedChatId = encodeURIComponent(conv.chat_id || '');
+        const encodedPeerId = encodeURIComponent(conv.peer_user_id || '');
+        const encodedPeerName = encodeURIComponent(conv.peer_user_name || '');
+        const starIconClass = isStarred ? 'bi-star-fill' : 'bi-star';
         return `
-            <div class="cs-account-group">
-                <div class="cs-account-title">
-                    <span>${escapeCustomerServiceHtml(account.id)}</span>
-                    <span class="cs-account-status ${account.enabled ? 'text-success' : 'text-muted'}">
-                        ${account.enabled ? '启用' : '禁用'} / ${account.running ? '运行中' : '未运行'}
-                    </span>
+            <div
+                class="cs-conversation-item ${isActive ? 'active' : ''}"
+                onclick="selectCustomerServiceConversation('${encodedCookieId}','${encodedChatId}','${encodedPeerId}','${encodedPeerName}')"
+            >
+                <div class="cs-conversation-top">
+                    <div class="cs-conversation-name">${escapeCustomerServiceHtml(conv.peer_user_name || conv.peer_user_id || '未知用户')}</div>
+                    <div class="d-flex align-items-center gap-1">
+                        <button
+                            type="button"
+                            class="cs-conversation-star ${isStarred ? 'active' : ''}"
+                            title="${isStarred ? '取消星标' : '设为星标'}"
+                            onclick="toggleCustomerServiceConversationStar(event,'${encodedCookieId}','${encodedChatId}')"
+                        >
+                            <i class="bi ${starIconClass}"></i>
+                        </button>
+                        <div class="cs-conversation-time">${escapeCustomerServiceHtml(formatCustomerServiceTime(conv.last_message_time))}</div>
+                    </div>
                 </div>
-                ${conversationItems || '<div class="text-muted small px-2 py-2">无会话</div>'}
+                <div class="cs-conversation-preview">${escapeCustomerServiceHtml(conv.last_message_preview || '')}</div>
             </div>
         `;
     }).join('');
@@ -16801,11 +16753,7 @@ function renderCustomerServiceConversationHeader() {
                 </button>
                 <div>
                     <div class="fw-bold">${escapeCustomerServiceHtml(selected.peer_user_name || selected.peer_user_id || '未知用户')}</div>
-                    <div class="text-muted small">
-                        账号: ${escapeCustomerServiceHtml(customerServiceState.selectedCookieId)} |
-                        UID: ${escapeCustomerServiceHtml(selected.peer_user_id || '-')} |
-                        Chat: ${escapeCustomerServiceHtml(selected.chat_id || '-')}
-                    </div>
+                    <div class="text-muted small">账号: ${escapeCustomerServiceHtml(customerServiceState.selectedCookieId || '-')}</div>
                 </div>
             </div>
             <div class="cs-header-actions">

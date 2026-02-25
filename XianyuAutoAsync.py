@@ -5642,9 +5642,40 @@ Cookie数量: {cookie_count}
 
             # 智能匹配发货规则：优先精确匹配，然后兜底匹配
             delivery_rules = []
+            matched_by_item_id = False
 
-            # 第一步：如果有规格信息，尝试精确匹配多规格发货规则
-            if spec_name and spec_value:
+            # 第一步：优先按商品ID独立匹配（不和关键词组合）
+            if item_id and item_id != "未知商品":
+                logger.info(f"优先尝试商品ID匹配发货规则: item_id={item_id}")
+                if spec_name and spec_value:
+                    if spec_name_2 and spec_value_2:
+                        logger.info(f"尝试商品ID+双规格匹配: item_id={item_id}, [{spec_name}:{spec_value}, {spec_name_2}:{spec_value_2}]")
+                    else:
+                        logger.info(f"尝试商品ID+单规格匹配: item_id={item_id}, [{spec_name}:{spec_value}]")
+                    delivery_rules = db_manager.get_delivery_rules_by_item_id_and_spec(
+                        item_id=item_id,
+                        spec_name=spec_name,
+                        spec_value=spec_value,
+                        spec_name_2=spec_name_2,
+                        spec_value_2=spec_value_2,
+                        user_id=self.user_id
+                    )
+
+                if not delivery_rules:
+                    logger.info(f"尝试商品ID匹配普通规则: item_id={item_id}")
+                    delivery_rules = db_manager.get_delivery_rules_by_item_id(
+                        item_id=item_id,
+                        user_id=self.user_id
+                    )
+
+                if delivery_rules:
+                    matched_by_item_id = True
+                    logger.info(f"✅ 找到商品ID匹配规则: {len(delivery_rules)}个")
+                else:
+                    logger.info("❌ 商品ID未匹配到发货规则，将尝试关键词匹配")
+
+            # 第二步：商品ID未命中时，按关键词匹配
+            if not delivery_rules and spec_name and spec_value:
                 if spec_name_2 and spec_value_2:
                     logger.info(f"尝试精确匹配双规格发货规则: {search_text[:50]}... [{spec_name}:{spec_value}, {spec_name_2}:{spec_value_2}]")
                 else:
@@ -5658,7 +5689,7 @@ Cookie数量: {cookie_count}
                 else:
                     logger.info(f"❌ 未找到精确匹配的多规格发货规则")
 
-            # 第二步：如果精确匹配失败，尝试兜底匹配（普通发货规则）
+            # 第三步：关键词兜底匹配（普通发货规则）
             if not delivery_rules:
                 logger.info(f"尝试兜底匹配普通发货规则: {search_text[:50]}...")
                 delivery_rules = db_manager.get_delivery_rules_by_keyword(search_text, user_id=self.user_id)
@@ -5674,6 +5705,11 @@ Cookie数量: {cookie_count}
 
             # 使用第一个匹配的规则（按关键字长度降序排列，优先匹配更精确的规则）
             rule = delivery_rules[0]
+
+            if matched_by_item_id:
+                logger.info(f"🎯 当前规则由商品ID命中: item_id={item_id}, 规则ID={rule.get('id')}")
+            else:
+                logger.info(f"🎯 当前规则由关键词命中: keyword={rule.get('keyword')}, 规则ID={rule.get('id')}")
 
             # 注释掉自动发货时的商品信息保存逻辑，避免重复保存导致item_detail字段内容累积
             # 商品信息应该在商品列表获取、订单详情获取等其他环节已经保存过了
