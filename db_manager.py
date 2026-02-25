@@ -63,7 +63,16 @@ class DBManager:
 
         logger.info(f"SQL日志已启用，日志级别: {self.sql_log_level}")
 
+        # 客服台运行期配置
+        self.customer_service_per_session_limit = 200
+        self.customer_service_global_limit = 20000
+        self.customer_service_runtime_id = (
+            f"runtime_{int(time.time() * 1000)}_"
+            f"{''.join(random.choices(string.ascii_lowercase + string.digits, k=6))}"
+        )
+
         self.init_db()
+        self._initialize_customer_service_runtime()
     
     def init_db(self):
         """初始化数据库表结构"""
@@ -497,6 +506,70 @@ class DBManager:
             )
             ''')
 
+            # 客服台运行期消息表（仅用于当前进程运行期）
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS customer_service_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                runtime_id TEXT NOT NULL,
+                user_id INTEGER,
+                cookie_id TEXT NOT NULL,
+                chat_id TEXT NOT NULL,
+                peer_user_id TEXT,
+                peer_user_name TEXT,
+                direction TEXT NOT NULL CHECK (direction IN ('in', 'out')),
+                message_type TEXT NOT NULL DEFAULT 'text',
+                content TEXT,
+                image_url TEXT,
+                item_id TEXT,
+                order_id TEXT,
+                message_time INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''')
+            cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_cs_messages_runtime_time
+            ON customer_service_messages(runtime_id, message_time, id)
+            ''')
+            cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_cs_messages_runtime_conv
+            ON customer_service_messages(runtime_id, cookie_id, chat_id, message_time, id)
+            ''')
+            cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_cs_messages_user_runtime
+            ON customer_service_messages(user_id, runtime_id)
+            ''')
+
+            # 客服台发送审计日志表
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS customer_service_send_audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                cookie_id TEXT NOT NULL,
+                chat_id TEXT NOT NULL,
+                to_user_id TEXT,
+                to_user_name TEXT,
+                message_type TEXT NOT NULL DEFAULT 'text',
+                message_preview TEXT,
+                image_url TEXT,
+                status TEXT NOT NULL DEFAULT 'success' CHECK (status IN ('success', 'rejected', 'failed')),
+                error_detail TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+            )
+            ''')
+            cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_cs_send_audit_user_time
+            ON customer_service_send_audit_logs(user_id, id)
+            ''')
+            cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_cs_send_audit_cookie_chat
+            ON customer_service_send_audit_logs(cookie_id, chat_id, id)
+            ''')
+            cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_cs_send_audit_status
+            ON customer_service_send_audit_logs(status, id)
+            ''')
+
             # 插入默认通知模板
             cursor.execute('''
             INSERT OR IGNORE INTO notification_templates (type, template) VALUES
@@ -568,7 +641,12 @@ Cookie数量: {cookie_count}
             ('smtp_from', '', '发件人显示名（留空则使用用户名）'),
             ('smtp_use_tls', 'true', '是否启用TLS'),
             ('smtp_use_ssl', 'false', '是否启用SSL'),
-            ('qq_reply_secret_key', 'xianyu_qq_reply_2024', 'QQ回复消息API秘钥')
+            ('qq_reply_secret_key', 'xianyu_qq_reply_2024', 'QQ回复消息API秘钥'),
+            ('cs_send_min_interval_seconds', '1.5', '客服台发送风控：同会话最小发送间隔（秒）'),
+            ('cs_send_window_seconds', '60', '客服台发送风控：统计窗口时长（秒）'),
+            ('cs_send_max_messages_per_window', '20', '客服台发送风控：窗口内最大消息数'),
+            ('cs_send_duplicate_block_seconds', '30', '客服台发送风控：重复文本拦截时长（秒）'),
+            ('cs_send_max_message_length', '1000', '客服台发送风控：文本最大长度（字符）')
             ''')
 
             # 检查并升级数据库
@@ -1440,6 +1518,22 @@ Cookie数量: {cookie_count}
                 pass
             raise
 
+    def _initialize_customer_service_runtime(self):
+        """初始化客服台运行期（仅保留当前运行期消息）"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor, "DELETE FROM customer_service_messages")
+                self.conn.commit()
+                logger.info(
+                    f"客服台运行期初始化完成: runtime_id={self.customer_service_runtime_id}, "
+                    f"每会话上限={self.customer_service_per_session_limit}, "
+                    f"全局上限={self.customer_service_global_limit}"
+                )
+            except Exception as e:
+                logger.error(f"客服台运行期初始化失败: {e}")
+                self.conn.rollback()
+
     def close(self):
         """关闭数据库连接"""
         if self.conn:
@@ -1498,6 +1592,380 @@ Cookie数量: {cookie_count}
         """批量执行SQL并记录日志"""
         self._log_sql(sql, f"批量执行 {len(params_list)} 条记录", "EXECUTEMANY")
         return cursor.executemany(sql, params_list)
+
+    # -------------------- 客服台运行期消息 --------------------
+    def _normalize_chat_id(self, chat_id: str) -> str:
+        if chat_id is None:
+            return ''
+        chat_id = str(chat_id).strip()
+        if not chat_id:
+            return ''
+        return chat_id.split('@')[0]
+
+    def _trim_customer_service_messages(self, cursor, runtime_id: str, cookie_id: str, chat_id: str):
+        """执行客服台消息保留策略：每会话200条、全局2万条"""
+        # 每会话限制
+        self._execute_sql(
+            cursor,
+            '''
+            SELECT COUNT(1)
+            FROM customer_service_messages
+            WHERE runtime_id = ? AND cookie_id = ? AND chat_id = ?
+            ''',
+            (runtime_id, cookie_id, chat_id)
+        )
+        per_count = cursor.fetchone()[0] or 0
+        if per_count > self.customer_service_per_session_limit:
+            excess = per_count - self.customer_service_per_session_limit
+            self._execute_sql(
+                cursor,
+                '''
+                DELETE FROM customer_service_messages
+                WHERE id IN (
+                    SELECT id
+                    FROM customer_service_messages
+                    WHERE runtime_id = ? AND cookie_id = ? AND chat_id = ?
+                    ORDER BY message_time ASC, id ASC
+                    LIMIT ?
+                )
+                ''',
+                (runtime_id, cookie_id, chat_id, excess)
+            )
+
+        # 全局限制
+        self._execute_sql(
+            cursor,
+            '''
+            SELECT COUNT(1)
+            FROM customer_service_messages
+            WHERE runtime_id = ?
+            ''',
+            (runtime_id,)
+        )
+        total_count = cursor.fetchone()[0] or 0
+        if total_count > self.customer_service_global_limit:
+            excess = total_count - self.customer_service_global_limit
+            self._execute_sql(
+                cursor,
+                '''
+                DELETE FROM customer_service_messages
+                WHERE id IN (
+                    SELECT id
+                    FROM customer_service_messages
+                    WHERE runtime_id = ?
+                    ORDER BY message_time ASC, id ASC
+                    LIMIT ?
+                )
+                ''',
+                (runtime_id, excess)
+            )
+
+    def add_customer_service_message(
+        self,
+        cookie_id: str,
+        chat_id: str,
+        peer_user_id: str = '',
+        peer_user_name: str = '',
+        direction: str = 'in',
+        message_type: str = 'text',
+        content: str = '',
+        image_url: str = '',
+        item_id: str = '',
+        order_id: str = '',
+        message_time: Optional[int] = None
+    ) -> bool:
+        """写入客服台运行期消息并执行容量淘汰"""
+        normalized_chat_id = self._normalize_chat_id(chat_id)
+        if not cookie_id or not normalized_chat_id:
+            return False
+
+        safe_direction = direction if direction in ('in', 'out') else 'in'
+        safe_message_type = message_type if message_type in ('text', 'image', 'system') else 'text'
+        safe_message_time = int(message_time) if message_time else int(time.time() * 1000)
+
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor, "SELECT user_id FROM cookies WHERE id = ?", (cookie_id,))
+                cookie_row = cursor.fetchone()
+                if not cookie_row:
+                    return False
+                user_id = cookie_row[0]
+
+                self._execute_sql(
+                    cursor,
+                    '''
+                    INSERT INTO customer_service_messages (
+                        runtime_id, user_id, cookie_id, chat_id, peer_user_id, peer_user_name,
+                        direction, message_type, content, image_url, item_id, order_id, message_time
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        self.customer_service_runtime_id,
+                        user_id,
+                        str(cookie_id).strip(),
+                        normalized_chat_id,
+                        str(peer_user_id or '').strip(),
+                        str(peer_user_name or '').strip(),
+                        safe_direction,
+                        safe_message_type,
+                        str(content or ''),
+                        str(image_url or ''),
+                        str(item_id or ''),
+                        str(order_id or ''),
+                        safe_message_time
+                    )
+                )
+
+                self._trim_customer_service_messages(
+                    cursor,
+                    self.customer_service_runtime_id,
+                    str(cookie_id).strip(),
+                    normalized_chat_id
+                )
+                self.conn.commit()
+                return True
+            except Exception as e:
+                logger.error(f"写入客服台消息失败: {e}")
+                self.conn.rollback()
+                return False
+
+    def get_customer_service_runtime_stats(self, user_id: int) -> Dict[str, int]:
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(
+                    cursor,
+                    '''
+                    SELECT COUNT(1) AS total_messages,
+                           COUNT(DISTINCT cookie_id || ':' || chat_id) AS total_conversations
+                    FROM customer_service_messages
+                    WHERE runtime_id = ? AND user_id = ?
+                    ''',
+                    (self.customer_service_runtime_id, user_id)
+                )
+                row = cursor.fetchone()
+                return {
+                    'total_messages': row[0] or 0,
+                    'total_conversations': row[1] or 0
+                }
+            except Exception as e:
+                logger.error(f"获取客服台运行期统计失败: {e}")
+                return {'total_messages': 0, 'total_conversations': 0}
+
+    def get_customer_service_conversations(self, user_id: int) -> List[Dict[str, Any]]:
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(
+                    cursor,
+                    '''
+                    SELECT
+                        m.cookie_id,
+                        m.chat_id,
+                        m.peer_user_id,
+                        m.peer_user_name,
+                        m.direction,
+                        m.message_type,
+                        m.content,
+                        m.image_url,
+                        m.item_id,
+                        m.order_id,
+                        m.message_time,
+                        c.message_count
+                    FROM customer_service_messages m
+                    JOIN (
+                        SELECT
+                            grouped.cookie_id,
+                            grouped.chat_id,
+                            grouped.message_count,
+                            (
+                                SELECT x.id
+                                FROM customer_service_messages x
+                                WHERE x.runtime_id = ?
+                                  AND x.user_id = ?
+                                  AND x.cookie_id = grouped.cookie_id
+                                  AND x.chat_id = grouped.chat_id
+                                ORDER BY x.message_time DESC, x.id DESC
+                                LIMIT 1
+                            ) AS latest_id
+                        FROM (
+                            SELECT cookie_id, chat_id, COUNT(1) AS message_count
+                            FROM customer_service_messages
+                            WHERE runtime_id = ? AND user_id = ?
+                            GROUP BY cookie_id, chat_id
+                        ) grouped
+                    ) c
+                    ON m.id = c.latest_id
+                    ORDER BY m.message_time DESC, m.id DESC
+                    ''',
+                    (
+                        self.customer_service_runtime_id,
+                        user_id,
+                        self.customer_service_runtime_id,
+                        user_id
+                    )
+                )
+                rows = cursor.fetchall()
+                conversations = []
+                for row in rows:
+                    message_type = row[5] or 'text'
+                    raw_content = row[6] or ''
+                    preview = raw_content
+                    if message_type == 'image':
+                        preview = '[图片]'
+                    elif message_type == 'system':
+                        preview = raw_content or '[系统消息]'
+                    if len(preview) > 80:
+                        preview = preview[:80] + '...'
+
+                    peer_user_name = (row[3] or '').strip()
+                    peer_user_id = (row[2] or '').strip()
+                    if not peer_user_name:
+                        peer_user_name = peer_user_id or '未知用户'
+
+                    conversations.append({
+                        'cookie_id': row[0],
+                        'chat_id': row[1],
+                        'peer_user_id': peer_user_id,
+                        'peer_user_name': peer_user_name,
+                        'last_message_direction': row[4] or 'in',
+                        'last_message_type': message_type,
+                        'last_message_preview': preview,
+                        'last_message_content': raw_content,
+                        'last_image_url': row[7] or '',
+                        'item_id': row[8] or '',
+                        'order_id': row[9] or '',
+                        'last_message_time': int(row[10] or 0),
+                        'message_count': int(row[11] or 0)
+                    })
+                return conversations
+            except Exception as e:
+                logger.error(f"获取客服台会话列表失败: {e}")
+                return []
+
+    def get_customer_service_messages(self, user_id: int, cookie_id: str, chat_id: str, limit: int = 200) -> List[Dict[str, Any]]:
+        normalized_chat_id = self._normalize_chat_id(chat_id)
+        if not cookie_id or not normalized_chat_id:
+            return []
+
+        safe_limit = max(1, min(int(limit), self.customer_service_per_session_limit))
+
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(
+                    cursor,
+                    '''
+                    SELECT id, direction, message_type, content, image_url,
+                           peer_user_id, peer_user_name, item_id, order_id, message_time
+                    FROM customer_service_messages
+                    WHERE runtime_id = ? AND user_id = ? AND cookie_id = ? AND chat_id = ?
+                    ORDER BY message_time DESC, id DESC
+                    LIMIT ?
+                    ''',
+                    (self.customer_service_runtime_id, user_id, cookie_id, normalized_chat_id, safe_limit)
+                )
+                rows = cursor.fetchall()
+                rows.reverse()
+                messages = []
+                for row in rows:
+                    messages.append({
+                        'id': row[0],
+                        'direction': row[1] or 'in',
+                        'message_type': row[2] or 'text',
+                        'content': row[3] or '',
+                        'image_url': row[4] or '',
+                        'peer_user_id': row[5] or '',
+                        'peer_user_name': row[6] or '',
+                        'item_id': row[7] or '',
+                        'order_id': row[8] or '',
+                        'message_time': int(row[9] or 0)
+                    })
+                return messages
+            except Exception as e:
+                logger.error(f"获取客服台消息失败: {e}")
+                return []
+
+    def get_customer_service_order_info(
+        self,
+        user_id: int,
+        cookie_id: str,
+        chat_id: str,
+        peer_user_id: str = ''
+    ) -> Optional[Dict[str, Any]]:
+        normalized_chat_id = self._normalize_chat_id(chat_id)
+        if not cookie_id or not normalized_chat_id:
+            return None
+
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+
+                # 先校验账号归属
+                self._execute_sql(
+                    cursor,
+                    "SELECT user_id FROM cookies WHERE id = ?",
+                    (cookie_id,)
+                )
+                cookie_row = cursor.fetchone()
+                if not cookie_row or cookie_row[0] != user_id:
+                    return None
+
+                sid_full = f"{normalized_chat_id}@goofish"
+
+                self._execute_sql(
+                    cursor,
+                    '''
+                    SELECT order_id, item_id, buyer_id, buyer_nick, sid, spec_name, spec_value,
+                           spec_name_2, spec_value_2, quantity, amount, order_status, created_at, updated_at
+                    FROM orders
+                    WHERE cookie_id = ?
+                      AND (sid = ? OR sid = ? OR sid LIKE ?)
+                    ORDER BY datetime(updated_at) DESC, datetime(created_at) DESC
+                    LIMIT 1
+                    ''',
+                    (cookie_id, normalized_chat_id, sid_full, f"{normalized_chat_id}@%")
+                )
+                row = cursor.fetchone()
+
+                if not row and peer_user_id:
+                    self._execute_sql(
+                        cursor,
+                        '''
+                        SELECT order_id, item_id, buyer_id, buyer_nick, sid, spec_name, spec_value,
+                               spec_name_2, spec_value_2, quantity, amount, order_status, created_at, updated_at
+                        FROM orders
+                        WHERE cookie_id = ? AND buyer_id = ?
+                        ORDER BY datetime(updated_at) DESC, datetime(created_at) DESC
+                        LIMIT 1
+                        ''',
+                        (cookie_id, str(peer_user_id).strip())
+                    )
+                    row = cursor.fetchone()
+
+                if not row:
+                    return None
+
+                return {
+                    'order_id': row[0],
+                    'item_id': row[1],
+                    'buyer_id': row[2],
+                    'buyer_nick': row[3] or '',
+                    'sid': row[4] or '',
+                    'spec_name': row[5] or '',
+                    'spec_value': row[6] or '',
+                    'spec_name_2': row[7] or '',
+                    'spec_value_2': row[8] or '',
+                    'quantity': row[9] or '',
+                    'amount': row[10] or '',
+                    'order_status': row[11] or 'unknown',
+                    'created_at': row[12],
+                    'updated_at': row[13]
+                }
+            except Exception as e:
+                logger.error(f"获取客服台订单信息失败: {e}")
+                return None
     
     # -------------------- Cookie操作 --------------------
     def save_cookie(self, cookie_id: str, cookie_value: str, user_id: int = None) -> bool:
@@ -6280,10 +6748,12 @@ Cookie数量: {cookie_count}
                     'delivery_rules': 'id',
                     'notification_channels': 'id',
                     'user_settings': 'id',
-                    'system_settings': 'id',
+                    'system_settings': 'key',
                     'email_verifications': 'id',
                     'captcha_codes': 'id',
-                    'orders': 'order_id'
+                    'orders': 'order_id',
+                    'risk_control_logs': 'id',
+                    'customer_service_send_audit_logs': 'id'
                 }
 
                 primary_key = primary_key_map.get(table_name, 'id')
@@ -6543,6 +7013,210 @@ Cookie数量: {cookie_count}
 
         return {"success_count": success_count, "failed_count": failed_count}
 
+    # ==================== 客服台发送审计日志 ====================
+
+    def add_customer_service_send_audit_log(
+        self,
+        user_id: int,
+        cookie_id: str,
+        chat_id: str,
+        to_user_id: str = '',
+        to_user_name: str = '',
+        message_type: str = 'text',
+        message_preview: str = '',
+        image_url: str = '',
+        status: str = 'success',
+        error_detail: str = ''
+    ) -> bool:
+        safe_cookie_id = str(cookie_id or '').strip()
+        safe_chat_id = self._normalize_chat_id(chat_id)
+        safe_to_user_id = str(to_user_id or '').strip()
+        safe_to_user_name = str(to_user_name or '').strip()
+        safe_message_type = 'image' if str(message_type or '').lower() == 'image' else 'text'
+        safe_status = str(status or 'success').strip().lower()
+        if safe_status not in ('success', 'rejected', 'failed'):
+            safe_status = 'success'
+        safe_preview = str(message_preview or '').strip()[:500]
+        safe_image_url = str(image_url or '').strip()[:500]
+        safe_error_detail = str(error_detail or '').strip()[:500]
+
+        if not safe_cookie_id or not safe_chat_id:
+            return False
+
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                cursor.execute(
+                    '''
+                    INSERT INTO customer_service_send_audit_logs (
+                        user_id, cookie_id, chat_id, to_user_id, to_user_name,
+                        message_type, message_preview, image_url, status, error_detail
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        int(user_id) if user_id is not None else None,
+                        safe_cookie_id,
+                        safe_chat_id,
+                        safe_to_user_id,
+                        safe_to_user_name,
+                        safe_message_type,
+                        safe_preview,
+                        safe_image_url,
+                        safe_status,
+                        safe_error_detail
+                    )
+                )
+                self.conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"写入客服发送审计日志失败: {e}")
+            return False
+
+    def get_customer_service_send_audit_logs(
+        self,
+        user_id: Optional[int] = None,
+        cookie_id: str = '',
+        chat_id: str = '',
+        message_type: str = '',
+        status: str = '',
+        limit: int = 100,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        safe_cookie_id = str(cookie_id or '').strip()
+        safe_chat_id = self._normalize_chat_id(chat_id)
+        safe_message_type = str(message_type or '').strip().lower()
+        safe_status = str(status or '').strip().lower()
+        safe_limit = max(1, min(int(limit), 500))
+        safe_offset = max(0, int(offset))
+
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                where_clauses = []
+                params: List[Any] = []
+
+                if user_id is not None:
+                    where_clauses.append("l.user_id = ?")
+                    params.append(int(user_id))
+                if safe_cookie_id:
+                    where_clauses.append("l.cookie_id = ?")
+                    params.append(safe_cookie_id)
+                if safe_chat_id:
+                    where_clauses.append("l.chat_id = ?")
+                    params.append(safe_chat_id)
+                if safe_message_type in ('text', 'image'):
+                    where_clauses.append("l.message_type = ?")
+                    params.append(safe_message_type)
+                if safe_status in ('success', 'rejected', 'failed'):
+                    where_clauses.append("l.status = ?")
+                    params.append(safe_status)
+
+                where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ''
+                sql = f'''
+                    SELECT
+                        l.id, l.user_id, u.username, l.cookie_id, l.chat_id,
+                        l.to_user_id, l.to_user_name, l.message_type, l.message_preview,
+                        l.image_url, l.status, l.error_detail, l.created_at
+                    FROM customer_service_send_audit_logs l
+                    LEFT JOIN users u ON l.user_id = u.id
+                    {where_sql}
+                    ORDER BY l.id DESC
+                    LIMIT ? OFFSET ?
+                '''
+                params.extend([safe_limit, safe_offset])
+                cursor.execute(sql, params)
+
+                columns = [col[0] for col in cursor.description]
+                return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"获取客服发送审计日志失败: {e}")
+            return []
+
+    def get_customer_service_send_audit_logs_count(
+        self,
+        user_id: Optional[int] = None,
+        cookie_id: str = '',
+        chat_id: str = '',
+        message_type: str = '',
+        status: str = ''
+    ) -> int:
+        safe_cookie_id = str(cookie_id or '').strip()
+        safe_chat_id = self._normalize_chat_id(chat_id)
+        safe_message_type = str(message_type or '').strip().lower()
+        safe_status = str(status or '').strip().lower()
+
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                where_clauses = []
+                params: List[Any] = []
+
+                if user_id is not None:
+                    where_clauses.append("user_id = ?")
+                    params.append(int(user_id))
+                if safe_cookie_id:
+                    where_clauses.append("cookie_id = ?")
+                    params.append(safe_cookie_id)
+                if safe_chat_id:
+                    where_clauses.append("chat_id = ?")
+                    params.append(safe_chat_id)
+                if safe_message_type in ('text', 'image'):
+                    where_clauses.append("message_type = ?")
+                    params.append(safe_message_type)
+                if safe_status in ('success', 'rejected', 'failed'):
+                    where_clauses.append("status = ?")
+                    params.append(safe_status)
+
+                where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ''
+                sql = f"SELECT COUNT(1) FROM customer_service_send_audit_logs {where_sql}"
+                cursor.execute(sql, params)
+                row = cursor.fetchone()
+                return int(row[0] or 0) if row else 0
+        except Exception as e:
+            logger.error(f"获取客服发送审计日志数量失败: {e}")
+            return 0
+
+    def delete_customer_service_send_audit_log(self, log_id: int) -> bool:
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                cursor.execute(
+                    "DELETE FROM customer_service_send_audit_logs WHERE id = ?",
+                    (int(log_id),)
+                )
+                self.conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"删除客服发送审计日志失败: {e}")
+            return False
+
+    def clear_customer_service_send_audit_logs(
+        self,
+        user_id: Optional[int] = None,
+        cookie_id: str = ''
+    ) -> int:
+        safe_cookie_id = str(cookie_id or '').strip()
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                where_clauses = []
+                params: List[Any] = []
+                if user_id is not None:
+                    where_clauses.append("user_id = ?")
+                    params.append(int(user_id))
+                if safe_cookie_id:
+                    where_clauses.append("cookie_id = ?")
+                    params.append(safe_cookie_id)
+                where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ''
+                sql = f"DELETE FROM customer_service_send_audit_logs {where_sql}"
+                cursor.execute(sql, params)
+                affected = cursor.rowcount
+                self.conn.commit()
+                return int(affected or 0)
+        except Exception as e:
+            logger.error(f"清空客服发送审计日志失败: {e}")
+            return 0
+
     # ==================== 风控日志管理 ====================
 
     def add_risk_control_log(self, cookie_id: str, event_type: str = 'slider_captcha',
@@ -6753,7 +7427,20 @@ Cookie数量: {cookie_count}
                 except Exception as e:
                     logger.warning(f"清理风控日志失败: {e}")
                     stats['risk_control_logs'] = 0
-                
+
+                # 清理客服发送审计日志（保留最近90天）
+                try:
+                    cursor.execute(
+                        "DELETE FROM customer_service_send_audit_logs WHERE created_at < datetime('now', '-' || ? || ' days')",
+                        (days,)
+                    )
+                    stats['customer_service_send_audit_logs'] = cursor.rowcount
+                    if cursor.rowcount > 0:
+                        logger.info(f"清理了 {cursor.rowcount} 条过期的客服发送审计日志（{days}天前）")
+                except Exception as e:
+                    logger.warning(f"清理客服发送审计日志失败: {e}")
+                    stats['customer_service_send_audit_logs'] = 0
+
                 # 清理AI商品缓存（保留最近30天）
                 cache_days = min(days, 30)  # AI商品缓存最多保留30天
                 try:

@@ -103,6 +103,12 @@
           <span>消息通知</span>
         </a>
       </div>
+      <div class="nav-item" data-menu-id="customer-service">
+        <a href="javascript:void(0)" class="nav-link" onclick="showSection('customer-service')">
+          <i class="bi bi-chat-left-dots"></i>
+          <span>客服台</span>
+        </a>
+      </div>
       <div class="nav-item" data-menu-id="online-im">
         <a href="javascript:void(0)" class="nav-link" onclick="showSection('online-im')">
           <i class="bi bi-headset"></i>
@@ -137,6 +143,12 @@
           <a href="javascript:void(0)" class="nav-link" onclick="showSection('risk-control-logs')">
             <i class="bi bi-shield-exclamation"></i>
             <span>风控日志</span>
+          </a>
+        </div>
+        <div class="nav-item" data-menu-id="send-audit-logs">
+          <a href="javascript:void(0)" class="nav-link" onclick="showSection('send-audit-logs')">
+            <i class="bi bi-send-check"></i>
+            <span>发送审计</span>
           </a>
         </div>
         <div class="nav-item" data-menu-id="data-management">
@@ -2066,6 +2078,229 @@
       </div>
     </div>
 
+    <!-- 客服发送审计日志内容 -->
+    <div id="send-audit-logs-section" class="content-section">
+      <div class="content-header">
+        <h2 class="mb-0">
+          <i class="bi bi-send-check me-2"></i>
+          发送审计日志
+        </h2>
+        <p class="text-muted mb-0">查看客服发送动作与风控拦截记录</p>
+      </div>
+
+      <div class="content-body">
+        <div class="card mb-4">
+          <div class="card-header">
+            <h5 class="mb-0">
+              <i class="bi bi-funnel me-2"></i>
+              筛选条件
+            </h5>
+          </div>
+          <div class="card-body">
+            <div class="row g-3 align-items-end">
+              <div class="col-md-3">
+                <label class="form-label">账号</label>
+                <select class="form-select" id="sendAuditCookieFilter" onchange="loadCustomerServiceSendAuditLogs(0)">
+                  <option value="">全部账号</option>
+                </select>
+              </div>
+              <div class="col-md-2">
+                <label class="form-label">用户ID</label>
+                <input type="number" class="form-control" id="sendAuditUserIdFilter" placeholder="全部" onkeydown="if(event.key==='Enter'){loadCustomerServiceSendAuditLogs(0)}">
+              </div>
+              <div class="col-md-2">
+                <label class="form-label">消息类型</label>
+                <select class="form-select" id="sendAuditTypeFilter" onchange="loadCustomerServiceSendAuditLogs(0)">
+                  <option value="">全部</option>
+                  <option value="text">文本</option>
+                  <option value="image">图片</option>
+                </select>
+              </div>
+              <div class="col-md-2">
+                <label class="form-label">结果</label>
+                <select class="form-select" id="sendAuditStatusFilter" onchange="loadCustomerServiceSendAuditLogs(0)">
+                  <option value="">全部</option>
+                  <option value="success">成功</option>
+                  <option value="rejected">拦截</option>
+                  <option value="failed">失败</option>
+                </select>
+              </div>
+              <div class="col-md-1">
+                <label class="form-label">数量</label>
+                <select class="form-select" id="sendAuditLimit" onchange="loadCustomerServiceSendAuditLogs(0)">
+                  <option value="50">50</option>
+                  <option value="100" selected>100</option>
+                  <option value="200">200</option>
+                  <option value="500">500</option>
+                </select>
+              </div>
+              <div class="col-md-2">
+                <div class="d-grid">
+                  <button class="btn btn-primary" onclick="loadCustomerServiceSendAuditLogs(0)">
+                    <i class="bi bi-arrow-clockwise me-1"></i>刷新
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="mb-0">
+              <i class="bi bi-list-ul me-2"></i>
+              发送审计记录
+            </h5>
+            <div class="d-flex gap-2">
+              <span id="sendAuditCount" class="badge bg-info">总计: 0 条</span>
+              <button class="btn btn-sm btn-outline-danger" onclick="clearCustomerServiceSendAuditLogs()">
+                <i class="bi bi-trash me-1"></i>清空
+              </button>
+            </div>
+          </div>
+          <div class="card-body p-0">
+            <div id="loadingSendAuditLogs" class="text-center py-4">
+              <div class="spinner-border" role="status"><span class="visually-hidden">加载中...</span></div>
+              <p class="mt-2">正在加载发送审计日志...</p>
+            </div>
+            <div id="sendAuditContainer" style="display: none;">
+              <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                  <thead class="table-light">
+                    <tr>
+                      <th width="150">时间</th>
+                      <th width="80">用户</th>
+                      <th width="100">账号</th>
+                      <th width="110">会话</th>
+                      <th width="90">接收方</th>
+                      <th width="80">类型</th>
+                      <th width="80">结果</th>
+                      <th>消息摘要</th>
+                      <th width="180">原因</th>
+                      <th width="70">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="sendAuditTableBody"></tbody>
+                </table>
+              </div>
+            </div>
+            <div id="noSendAuditLogs" class="text-center py-4" style="display: none;">
+              <i class="bi bi-send-check" style="font-size: 3rem; color: #ccc;"></i>
+              <p class="mt-2 text-muted">暂无发送审计日志</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="d-flex justify-content-between align-items-center mt-3">
+          <div class="text-muted">
+            <span id="sendAuditPaginationInfo">显示第 0-0 条，共 0 条记录</span>
+          </div>
+          <nav>
+            <ul class="pagination pagination-sm mb-0" id="sendAuditPagination"></ul>
+          </nav>
+        </div>
+      </div>
+    </div>
+
+    <!-- 客服台内容 -->
+    <div id="customer-service-section" class="content-section">
+      <div class="content-header" style="flex-shrink: 0;">
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+          <div>
+            <h2 class="mb-0">
+              <i class="bi bi-chat-left-dots me-2"></i>
+              客服台
+            </h2>
+            <p class="text-muted mb-0">会话聚合、消息处理与订单联动</p>
+          </div>
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            <button class="btn btn-sm btn-outline-secondary" onclick="refreshCustomerServiceData()" title="刷新会话与消息">
+              <i class="bi bi-arrow-clockwise"></i> 刷新
+            </button>
+          </div>
+        </div>
+      </div>
+      <div class="content-body p-0" style="flex: 1; overflow: hidden;">
+        <div class="customer-service-layout">
+          <aside class="cs-left-panel">
+            <div class="cs-panel-header">
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <strong>账号/会话</strong>
+                <span class="text-muted small" id="csConversationStats">0 条会话</span>
+              </div>
+              <input
+                type="text"
+                class="form-control form-control-sm"
+                id="csConversationSearch"
+                placeholder="搜索账号、昵称、用户ID或聊天ID"
+                oninput="filterCustomerServiceConversations()"
+              >
+              <div class="cs-filter-row">
+                <select class="form-select form-select-sm" id="csConversationStatusFilter" onchange="filterCustomerServiceConversations()">
+                  <option value="all">全部会话</option>
+                  <option value="pending">待回复</option>
+                  <option value="replied">已回复</option>
+                  <option value="starred">仅星标</option>
+                </select>
+              </div>
+            </div>
+            <div id="csAccountConversationList" class="cs-conversation-list"></div>
+          </aside>
+
+          <section class="cs-center-panel">
+            <div id="csConversationHeader" class="cs-conversation-header">
+              <div class="cs-empty-inline">
+                <i class="bi bi-chat-left-text me-2"></i>请选择左侧会话
+              </div>
+            </div>
+            <div id="csMessageList" class="cs-message-list">
+              <div class="cs-empty-state">
+                <i class="bi bi-chat-left-text"></i>
+                <p>请选择会话查看消息</p>
+              </div>
+            </div>
+            <div class="cs-composer">
+              <div class="cs-composer-input-wrap">
+                <textarea
+                  id="csMessageInput"
+                  class="form-control"
+                  rows="2"
+                  placeholder="输入回复内容，Enter 发送，Shift+Enter 换行，输入 / 选择模板，Ctrl/Cmd + V 粘贴图片"
+                ></textarea>
+                <div id="csTemplateSlashMenu" class="cs-template-slash-menu"></div>
+              </div>
+              <div class="cs-composer-actions">
+                <div class="d-flex align-items-center gap-2 flex-wrap">
+                  <button class="btn btn-sm btn-outline-secondary" onclick="openCustomerServiceImageLibrary()">
+                    <i class="bi bi-image me-1"></i>图片
+                  </button>
+                  <button class="btn btn-sm btn-outline-secondary" onclick="openCustomerServiceTemplateManager()">
+                    <i class="bi bi-journal-text me-1"></i>模板
+                  </button>
+                </div>
+                <button class="btn btn-sm btn-primary" id="csSendBtn" onclick="sendCustomerServiceMessage()">
+                  <i class="bi bi-send me-1"></i>发送
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <aside class="cs-right-panel">
+            <div class="cs-panel-header">
+              <strong>订单信息</strong>
+            </div>
+            <div id="csOrderInfoPanel" class="cs-order-info">
+              <div class="cs-empty-state small">
+                <i class="bi bi-receipt"></i>
+                <p>请选择会话查看关联订单</p>
+              </div>
+            </div>
+          </aside>
+        </div>
+        <div id="csMobileOrderOverlay" class="cs-mobile-order-overlay" onclick="closeCustomerServiceOrderDrawer()"></div>
+      </div>
+    </div>
+
     <!-- 在线客服内容 -->
     <div id="online-im-section" class="content-section">
       <div class="content-header" style="flex-shrink: 0;">
@@ -2412,6 +2647,56 @@
                     </button>
                   </div>
                 </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 客服发送风控配置（仅管理员可见） -->
+        <div id="customer-service-send-guard-settings" class="row mt-4" style="display: none;">
+          <div class="col-12">
+            <div class="card">
+              <div class="card-header">
+                <i class="bi bi-shield-check me-2"></i>客服发送风控
+                <span class="badge bg-warning ms-2">管理员专用</span>
+              </div>
+              <div class="card-body">
+                <div class="row g-3">
+                  <div class="col-md-4">
+                    <label for="csGuardMinInterval" class="form-label">最小发送间隔(秒)</label>
+                    <input type="number" class="form-control" id="csGuardMinInterval" step="0.1" min="0" max="30">
+                    <div class="form-text">同账号同会话两次发送的最小间隔。</div>
+                  </div>
+                  <div class="col-md-4">
+                    <label for="csGuardWindowSeconds" class="form-label">统计窗口(秒)</label>
+                    <input type="number" class="form-control" id="csGuardWindowSeconds" min="5" max="3600">
+                    <div class="form-text">频控窗口时长。</div>
+                  </div>
+                  <div class="col-md-4">
+                    <label for="csGuardMaxMessages" class="form-label">窗口内最多发送条数</label>
+                    <input type="number" class="form-control" id="csGuardMaxMessages" min="1" max="500">
+                    <div class="form-text">超过会触发429限制。</div>
+                  </div>
+                  <div class="col-md-6">
+                    <label for="csGuardDuplicateBlock" class="form-label">重复文本拦截时长(秒)</label>
+                    <input type="number" class="form-control" id="csGuardDuplicateBlock" min="1" max="3600">
+                    <div class="form-text">相同文本在该时间内禁止重复发送。</div>
+                  </div>
+                  <div class="col-md-6">
+                    <label for="csGuardMaxMessageLength" class="form-label">文本最大长度(字符)</label>
+                    <input type="number" class="form-control" id="csGuardMaxMessageLength" min="1" max="5000">
+                    <div class="form-text">超长文本将被拒绝发送。</div>
+                  </div>
+                </div>
+                <div class="d-flex gap-2 mt-3">
+                  <button type="button" class="btn btn-primary" onclick="saveCustomerServiceSendGuardSettings()">
+                    <i class="bi bi-check-circle me-1"></i>保存风控配置
+                  </button>
+                  <button type="button" class="btn btn-outline-secondary" onclick="resetCustomerServiceSendGuardSettings()">
+                    <i class="bi bi-arrow-counterclockwise me-1"></i>恢复默认
+                  </button>
+                </div>
+                <div id="csGuardStatus" class="alert alert-info mt-3 mb-0 py-2" style="display: none;"></div>
               </div>
             </div>
           </div>

@@ -6491,14 +6491,102 @@ Cookie数量: {cookie_count}
         }
         await ws.send(json.dumps(msg))
 
-    async def send_msg(self, ws, cid, toid, text):
-        text = {
+    def _normalize_chat_id(self, chat_id: str) -> str:
+        if chat_id is None:
+            return ""
+        value = str(chat_id).strip()
+        if not value:
+            return ""
+        return value.split('@')[0]
+
+    def _extract_image_url_from_message(self, message_1: dict) -> str:
+        """从原始消息结构中尽可能提取图片URL"""
+        try:
+            payload_raw = (
+                message_1.get('6', {})
+                .get('3', {})
+                .get('5', '')
+            )
+
+            if not payload_raw:
+                return ""
+
+            payload_obj = payload_raw
+            if isinstance(payload_raw, str):
+                try:
+                    payload_obj = json.loads(payload_raw)
+                except Exception:
+                    payload_obj = payload_raw
+
+            if isinstance(payload_obj, dict):
+                pics = payload_obj.get('image', {}).get('pics', [])
+                if isinstance(pics, list) and pics:
+                    first_pic = pics[0] if isinstance(pics[0], dict) else {}
+                    url = first_pic.get('url', '')
+                    if url:
+                        return str(url)
+
+                candidates = [
+                    payload_obj.get('url', ''),
+                    payload_obj.get('imageUrl', ''),
+                    payload_obj.get('image_url', '')
+                ]
+                for candidate in candidates:
+                    if isinstance(candidate, str) and candidate.startswith('http'):
+                        return candidate
+
+            if isinstance(payload_obj, str):
+                match = re.search(r'https?://[^\s"\'<>]+', payload_obj)
+                if match:
+                    return match.group(0)
+        except Exception:
+            pass
+
+        return ""
+
+    def _record_customer_service_message(
+        self,
+        chat_id: str,
+        peer_user_id: str,
+        peer_user_name: str = '',
+        direction: str = 'in',
+        message_type: str = 'text',
+        content: str = '',
+        image_url: str = '',
+        item_id: str = '',
+        order_id: str = '',
+        message_time: int = None
+    ):
+        """记录客服台消息（容错，不影响主流程）"""
+        try:
+            db_manager.add_customer_service_message(
+                cookie_id=self.cookie_id,
+                chat_id=self._normalize_chat_id(chat_id),
+                peer_user_id=str(peer_user_id or '').split('@')[0],
+                peer_user_name=peer_user_name or '',
+                direction=direction,
+                message_type=message_type,
+                content=content,
+                image_url=image_url,
+                item_id=item_id,
+                order_id=order_id,
+                message_time=message_time
+            )
+        except Exception as e:
+            logger.debug(f"【{self.cookie_id}】记录客服台消息失败: {self._safe_str(e)}")
+
+    async def send_msg(self, ws, cid, toid, text, peer_name: str = ''):
+        text_content = '' if text is None else str(text)
+        normalized_cid = self._normalize_chat_id(cid) or str(cid).strip()
+        toid_clean = str(toid or '').split('@')[0]
+
+        text_payload = {
             "contentType": 1,
             "text": {
-                "text": text
+                "text": text_content
             }
         }
-        text_base64 = str(base64.b64encode(json.dumps(text).encode('utf-8')), 'utf-8')
+        text_base64 = str(base64.b64encode(json.dumps(text_payload).encode('utf-8')), 'utf-8')
         msg = {
             "lwp": "/r/MessageSend/sendByReceiverScope",
             "headers": {
@@ -6507,7 +6595,7 @@ Cookie数量: {cookie_count}
             "body": [
                 {
                     "uuid": generate_uuid(),
-                    "cid": f"{cid}@goofish",
+                    "cid": f"{normalized_cid}@goofish",
                     "conversationType": 1,
                     "content": {
                         "contentType": 101,
@@ -6529,13 +6617,22 @@ Cookie数量: {cookie_count}
                 },
                 {
                     "actualReceivers": [
-                        f"{toid}@goofish",
+                        f"{toid_clean}@goofish",
                         f"{self.myid}@goofish"
                     ]
                 }
             ]
         }
         await ws.send(json.dumps(msg))
+        self._record_customer_service_message(
+            chat_id=normalized_cid,
+            peer_user_id=toid_clean,
+            peer_user_name=peer_name or '',
+            direction='out',
+            message_type='text',
+            content=text_content,
+            message_time=int(time.time() * 1000)
+        )
 
     async def init(self, ws):
         # 如果没有token或者token过期，获取新token
@@ -8965,6 +9062,25 @@ Cookie数量: {cookie_count}
                 chat_id_raw = message_1.get("2", "")
                 chat_id = chat_id_raw.split('@')[0] if '@' in str(chat_id_raw) else str(chat_id_raw)
 
+                message_direction = int(message_1.get("7", 0) or 0)
+                content_type = 0
+                message_type = 'text'
+                message_image_url = ''
+                try:
+                    message_6_3 = message_1.get('6', {}).get('3', {})
+                    if isinstance(message_6_3, dict):
+                        content_type = int(message_6_3.get('4', 0) or 0)
+                except Exception:
+                    content_type = 0
+
+                if content_type == 2:
+                    message_type = 'image'
+                    message_image_url = self._extract_image_url_from_message(message_1)
+                    if not send_message:
+                        send_message = '[图片]'
+                elif content_type == 6:
+                    message_type = 'system'
+
             except Exception as e:
                 logger.error(f"【{self.cookie_id}】[{msg_id}] ❌ 提取聊天消息信息失败: {self._safe_str(e)}")
                 logger.error(f"【{self.cookie_id}】[{msg_id}] ⏹️ 处理结束（提取信息失败）")
@@ -8973,6 +9089,20 @@ Cookie数量: {cookie_count}
             # 格式化消息时间
             msg_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(create_time/1000))
 
+            # 记录收到的消息（只记录用户侧消息，避免系统噪声）
+            if send_user_id != self.myid and message_direction == 2 and message_type != 'system':
+                self._record_customer_service_message(
+                    chat_id=chat_id,
+                    peer_user_id=send_user_id,
+                    peer_user_name=send_user_name,
+                    direction='in',
+                    message_type=message_type,
+                    content=send_message or ('[图片]' if message_type == 'image' else ''),
+                    image_url=message_image_url,
+                    item_id=item_id,
+                    order_id=order_id or '',
+                    message_time=create_time
+                )
 
 
             # 判断消息方向
@@ -9954,9 +10084,12 @@ Cookie数量: {cookie_count}
             "items": all_items
         }
 
-    async def send_image_msg(self, ws, cid, toid, image_url, width=800, height=600, card_id=None):
+    async def send_image_msg(self, ws, cid, toid, image_url, width=800, height=600, card_id=None, peer_name: str = ''):
         """发送图片消息"""
         try:
+            normalized_cid = self._normalize_chat_id(cid) or str(cid).strip()
+            toid_clean = str(toid or '').split('@')[0]
+
             # 检查图片URL是否需要上传到CDN
             original_url = image_url
 
@@ -10007,8 +10140,8 @@ Cookie数量: {cookie_count}
             logger.info(f"  - 原始URL: {original_url}")
             logger.info(f"  - CDN URL: {image_url}")
             logger.info(f"  - 图片尺寸: {width}x{height}")
-            logger.info(f"  - 聊天ID: {cid}")
-            logger.info(f"  - 接收者ID: {toid}")
+            logger.info(f"  - 聊天ID: {normalized_cid}")
+            logger.info(f"  - 接收者ID: {toid_clean}")
 
             # 构造图片消息内容 - 使用正确的闲鱼格式
             image_content = {
@@ -10041,7 +10174,7 @@ Cookie数量: {cookie_count}
                 "body": [
                     {
                         "uuid": generate_uuid(),
-                        "cid": f"{cid}@goofish",
+                        "cid": f"{normalized_cid}@goofish",
                         "conversationType": 1,
                         "content": {
                             "contentType": 101,
@@ -10063,7 +10196,7 @@ Cookie数量: {cookie_count}
                     },
                     {
                         "actualReceivers": [
-                            f"{toid}@goofish",
+                            f"{toid_clean}@goofish",
                             f"{self.myid}@goofish"
                         ]
                     }
@@ -10072,6 +10205,16 @@ Cookie数量: {cookie_count}
 
             await ws.send(json.dumps(msg))
             logger.info(f"【{self.cookie_id}】图片消息发送成功: {image_url}")
+            self._record_customer_service_message(
+                chat_id=normalized_cid,
+                peer_user_id=toid_clean,
+                peer_user_name=peer_name or '',
+                direction='out',
+                message_type='image',
+                content='[图片]',
+                image_url=image_url,
+                message_time=int(time.time() * 1000)
+            )
 
         except Exception as e:
             logger.error(f"【{self.cookie_id}】发送图片消息失败: {self._safe_str(e)}")
