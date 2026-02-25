@@ -3,6 +3,7 @@ import os
 import threading
 import hashlib
 import time
+import re
 import json
 import random
 import string
@@ -12,7 +13,12 @@ import base64
 from datetime import datetime
 from PIL import Image, ImageDraw, ImageFont
 from typing import List, Tuple, Dict, Optional, Any
+from utils.timezone_utils import apply_beijing_timezone
 from loguru import logger
+
+apply_beijing_timezone()
+_CURRENT_TIMESTAMP_PATTERN = re.compile(r"\bCURRENT_TIMESTAMP\b", re.IGNORECASE)
+_LOCALTIME_SQL_EXPR = "(datetime('now', 'localtime'))"
 
 class DBManager:
     """SQLite数据库管理，持久化存储Cookie和关键字"""
@@ -332,6 +338,7 @@ class DBManager:
                 item_category TEXT,
                 item_price TEXT,
                 item_detail TEXT,
+                item_status INTEGER DEFAULT -1,
                 is_multi_spec BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -709,10 +716,62 @@ Cookie数量: {cookie_count}
             # 迁移notification_templates表以支持新的模板类型
             self._migrate_notification_templates(cursor)
 
+            # 兜底确保 item_info 的关键字段存在（与 db_version 无关）
+            self._ensure_item_info_columns(cursor)
+            # 兜底确保 delivery_rules 的关键字段存在（与 db_version 无关）
+            self._ensure_delivery_rules_columns(cursor)
+
         except Exception as e:
             logger.error(f"数据库迁移失败: {e}")
             # 迁移失败不应该阻止程序启动
             pass
+
+    def _ensure_item_info_columns(self, cursor):
+        """确保 item_info 表包含关键字段。"""
+        column_defs = {
+            "is_multi_spec": "BOOLEAN DEFAULT FALSE",
+            "item_status": "INTEGER DEFAULT -1",
+            "multi_quantity_delivery": "BOOLEAN DEFAULT FALSE"
+        }
+
+        for column_name, column_def in column_defs.items():
+            try:
+                self._execute_sql(cursor, f"SELECT {column_name} FROM item_info LIMIT 1")
+            except sqlite3.OperationalError:
+                self._execute_sql(cursor, f"ALTER TABLE item_info ADD COLUMN {column_name} {column_def}")
+                logger.info(f"为 item_info 表添加 {column_name} 字段")
+
+    def _ensure_delivery_rules_columns(self, cursor):
+        """确保 delivery_rules 表包含关键字段。"""
+        column_defs = {
+            "item_id": "TEXT",
+            "user_id": "INTEGER",
+            "last_delivery_date": "DATE",
+            "today_delivery_times": "INTEGER DEFAULT 0"
+        }
+
+        for column_name, column_def in column_defs.items():
+            try:
+                self._execute_sql(cursor, f"SELECT {column_name} FROM delivery_rules LIMIT 1")
+            except sqlite3.OperationalError:
+                self._execute_sql(cursor, f"ALTER TABLE delivery_rules ADD COLUMN {column_name} {column_def}")
+                logger.info(f"为 delivery_rules 表添加 {column_name} 字段")
+
+        # 兜底补齐历史规则的 user_id，避免多用户隔离后历史规则不可见
+        try:
+            self._execute_sql(cursor, "SELECT id FROM users WHERE username = 'admin' LIMIT 1")
+            admin_row = cursor.fetchone()
+            admin_user_id = admin_row[0] if admin_row else 1
+            self._execute_sql(cursor, "UPDATE delivery_rules SET user_id = ? WHERE user_id IS NULL", (admin_user_id,))
+        except Exception as e:
+            logger.warning(f"补齐 delivery_rules.user_id 失败: {e}")
+
+        # 为 item_id 相关查询添加索引
+        try:
+            self._execute_sql(cursor, "CREATE INDEX IF NOT EXISTS idx_delivery_rules_item_id ON delivery_rules(item_id)")
+            self._execute_sql(cursor, "CREATE INDEX IF NOT EXISTS idx_delivery_rules_user_item_id ON delivery_rules(user_id, item_id)")
+        except Exception as e:
+            logger.warning(f"创建 delivery_rules item_id 索引失败: {e}")
 
     def _update_cards_table_constraints(self, cursor):
         """更新cards表的CHECK约束以支持image和yifan_api类型"""
@@ -1068,6 +1127,13 @@ Cookie数量: {cookie_count}
                     # 多规格字段不存在，需要添加
                     self._execute_sql(cursor, "ALTER TABLE item_info ADD COLUMN is_multi_spec BOOLEAN DEFAULT FALSE")
                     logger.info("为item_info表添加多规格字段")
+
+                # 为item_info表添加商品状态字段（如果不存在）
+                try:
+                    self._execute_sql(cursor, "SELECT item_status FROM item_info LIMIT 1")
+                except sqlite3.OperationalError:
+                    self._execute_sql(cursor, "ALTER TABLE item_info ADD COLUMN item_status INTEGER DEFAULT -1")
+                    logger.info("为item_info表添加商品状态字段")
 
                 # 为item_info表添加多数量发货字段（如果不存在）
                 try:
@@ -1601,16 +1667,24 @@ Cookie数量: {cookie_count}
 
     def _execute_sql(self, cursor, sql: str, params: tuple = None):
         """执行SQL并记录日志"""
-        self._log_sql(sql, params, "EXECUTE")
+        normalized_sql = self._normalize_timestamp_sql(sql)
+        self._log_sql(normalized_sql, params, "EXECUTE")
         if params:
-            return cursor.execute(sql, params)
+            return cursor.execute(normalized_sql, params)
         else:
-            return cursor.execute(sql)
+            return cursor.execute(normalized_sql)
 
     def _executemany_sql(self, cursor, sql: str, params_list):
         """批量执行SQL并记录日志"""
-        self._log_sql(sql, f"批量执行 {len(params_list)} 条记录", "EXECUTEMANY")
-        return cursor.executemany(sql, params_list)
+        normalized_sql = self._normalize_timestamp_sql(sql)
+        self._log_sql(normalized_sql, f"批量执行 {len(params_list)} 条记录", "EXECUTEMANY")
+        return cursor.executemany(normalized_sql, params_list)
+
+    def _normalize_timestamp_sql(self, sql: str) -> str:
+        """将 CURRENT_TIMESTAMP 统一转换为本地时区表达式。"""
+        if not sql or "CURRENT_TIMESTAMP" not in sql.upper():
+            return sql
+        return _CURRENT_TIMESTAMP_PATTERN.sub(_LOCALTIME_SQL_EXPR, sql)
 
     # -------------------- 客服台运行期消息 --------------------
     def _normalize_chat_id(self, chat_id: str) -> str:
@@ -5214,8 +5288,8 @@ Cookie数量: {cookie_count}
                             logger.info(f"找到单规格匹配规则: {keyword} - {spec_name}:{spec_value}")
                         return rules
 
-                # 兜底匹配：仅卡券名称
-                cursor.execute('''
+                # 兜底匹配：仅卡券名称（严格按 user_id 隔离，避免多用户串规则）
+                fallback_sql = f'''
                 SELECT dr.id, dr.keyword, dr.item_id, dr.card_id, dr.delivery_count, dr.enabled,
                        dr.description, dr.delivery_times,
                        c.name as card_name, c.type as card_type, c.api_config,
@@ -5224,7 +5298,7 @@ Cookie数量: {cookie_count}
                        c.is_multi_spec, c.spec_name, c.spec_value, c.spec_name_2, c.spec_value_2
                 FROM delivery_rules dr
                 LEFT JOIN cards c ON dr.card_id = c.id
-                WHERE dr.enabled = 1 AND c.enabled = 1
+                WHERE dr.enabled = 1 AND c.enabled = 1 {user_filter}
                 AND (dr.item_id IS NULL OR dr.item_id = '')
                 AND (? LIKE '%' || dr.keyword || '%' OR dr.keyword LIKE '%' || ? || '%')
                 AND (c.is_multi_spec = 0 OR c.is_multi_spec IS NULL)
@@ -5234,7 +5308,11 @@ Cookie数量: {cookie_count}
                         ELSE LENGTH(dr.keyword) / 2
                     END DESC,
                     dr.delivery_times ASC
-                ''', (keyword, keyword, keyword))
+                '''
+                fallback_params = [keyword, keyword, keyword]
+                if user_id is not None:
+                    fallback_params.insert(0, user_id)
+                cursor.execute(fallback_sql, fallback_params)
 
                 rules = []
                 for row in cursor.fetchall():
@@ -5372,7 +5450,8 @@ Cookie数量: {cookie_count}
 
     def save_item_basic_info(self, cookie_id: str, item_id: str, item_title: str = None,
                             item_description: str = None, item_category: str = None,
-                            item_price: str = None, item_detail: str = None) -> bool:
+                            item_price: str = None, item_detail: str = None,
+                            item_status: int = None) -> bool:
         """保存或更新商品基本信息，使用原子操作避免并发问题
 
         Args:
@@ -5390,15 +5469,21 @@ Cookie数量: {cookie_count}
         try:
             with self.lock:
                 cursor = self.conn.cursor()
+                normalized_status = -1
+                if item_status is not None:
+                    try:
+                        normalized_status = int(item_status)
+                    except (ValueError, TypeError):
+                        normalized_status = -1
 
                 # 使用 INSERT OR IGNORE + UPDATE 的原子操作模式
                 # 首先尝试插入，如果已存在则忽略
                 cursor.execute('''
                 INSERT OR IGNORE INTO item_info (cookie_id, item_id, item_title, item_description,
-                                               item_category, item_price, item_detail, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                                               item_category, item_price, item_detail, item_status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ''', (cookie_id, item_id, item_title or '', item_description or '',
-                      item_category or '', item_price or '', item_detail or ''))
+                      item_category or '', item_price or '', item_detail or '', normalized_status))
 
                 # 如果是新插入的记录，直接返回成功
                 if cursor.rowcount > 0:
@@ -5431,6 +5516,10 @@ Cookie数量: {cookie_count}
                 if item_detail:
                     update_parts.append("item_detail = CASE WHEN (item_detail IS NULL OR item_detail = '' OR TRIM(item_detail) = '') THEN ? ELSE item_detail END")
                     params.append(item_detail)
+
+                if item_status is not None:
+                    update_parts.append("item_status = ?")
+                    params.append(normalized_status)
 
                 if update_parts:
                     update_parts.append("updated_at = CURRENT_TIMESTAMP")
@@ -5855,6 +5944,13 @@ Cookie数量: {cookie_count}
                         item_category = item_data.get('item_category', '')
                         item_price = item_data.get('item_price', '')
                         item_detail = item_data.get('item_detail', '')
+                        item_status_raw = item_data.get('item_status', None)
+                        item_status = None
+                        if item_status_raw is not None:
+                            try:
+                                item_status = int(item_status_raw)
+                            except (ValueError, TypeError):
+                                item_status = -1
 
                         if not cookie_id or not item_id:
                             continue
@@ -5867,10 +5963,10 @@ Cookie数量: {cookie_count}
                         # 使用 INSERT OR IGNORE + UPDATE 模式
                         cursor.execute('''
                         INSERT OR IGNORE INTO item_info (cookie_id, item_id, item_title, item_description,
-                                                       item_category, item_price, item_detail, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                                                       item_category, item_price, item_detail, item_status, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                         ''', (cookie_id, item_id, item_title, item_description,
-                              item_category, item_price, item_detail))
+                              item_category, item_price, item_detail, item_status if item_status is not None else -1))
 
                         if cursor.rowcount == 0:
                             # 记录已存在，进行条件更新
@@ -5881,6 +5977,7 @@ Cookie数量: {cookie_count}
                                 item_category = CASE WHEN (item_category IS NULL OR item_category = '') AND ? != '' THEN ? ELSE item_category END,
                                 item_price = CASE WHEN (item_price IS NULL OR item_price = '') AND ? != '' THEN ? ELSE item_price END,
                                 item_detail = CASE WHEN (item_detail IS NULL OR item_detail = '' OR TRIM(item_detail) = '') AND ? != '' THEN ? ELSE item_detail END,
+                                item_status = CASE WHEN ? IS NOT NULL THEN ? ELSE item_status END,
                                 updated_at = CURRENT_TIMESTAMP
                             WHERE cookie_id = ? AND item_id = ?
                             '''
@@ -5890,6 +5987,7 @@ Cookie数量: {cookie_count}
                                 item_category, item_category,
                                 item_price, item_price,
                                 item_detail, item_detail,
+                                item_status, item_status,
                                 cookie_id, item_id
                             ))
 
@@ -5938,6 +6036,13 @@ Cookie数量: {cookie_count}
                         item_title = item_data.get('item_title', '')
                         item_price = item_data.get('item_price', '')
                         item_category = item_data.get('item_category', '')
+                        item_status_raw = item_data.get('item_status', None)
+                        item_status = None
+                        if item_status_raw is not None:
+                            try:
+                                item_status = int(item_status_raw)
+                            except (ValueError, TypeError):
+                                item_status = -1
                         
                         if not cookie_id or not item_id:
                             continue
@@ -5948,6 +6053,7 @@ Cookie数量: {cookie_count}
                             item_title = ?,
                             item_price = ?,
                             item_category = ?,
+                            item_status = CASE WHEN ? IS NOT NULL THEN ? ELSE item_status END,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE cookie_id = ? AND item_id = ?
                         '''
@@ -5955,6 +6061,8 @@ Cookie数量: {cookie_count}
                             item_title,
                             item_price,
                             item_category,
+                            item_status,
+                            item_status,
                             cookie_id,
                             item_id
                         ))

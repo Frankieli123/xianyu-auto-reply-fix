@@ -12,6 +12,9 @@ import sqlite3
 from datetime import datetime
 import uvicorn
 from pathlib import Path
+from utils.timezone_utils import apply_beijing_timezone
+
+apply_beijing_timezone()
 
 app = FastAPI(title="闲鱼自动回复系统用户统计", version="1.0.0")
 
@@ -37,8 +40,8 @@ def init_database():
         CREATE TABLE IF NOT EXISTS user_stats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             anonymous_id TEXT UNIQUE NOT NULL,
-            first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
-            last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+            first_seen DATETIME DEFAULT (datetime('now', 'localtime')),
+            last_seen DATETIME DEFAULT (datetime('now', 'localtime')),
             os TEXT,
             version TEXT,
             total_reports INTEGER DEFAULT 1
@@ -71,7 +74,7 @@ def save_user_stats(data: UserStats):
             # 更新现有用户的最后访问时间和报告次数
             cursor.execute('''
                 UPDATE user_stats 
-                SET last_seen = CURRENT_TIMESTAMP, 
+                SET last_seen = datetime('now', 'localtime'),
                     total_reports = total_reports + 1,
                     os = ?,
                     version = ?
@@ -126,7 +129,7 @@ async def get_user_stats():
         cursor.execute('''
             SELECT COUNT(*) 
             FROM user_stats 
-            WHERE DATE(last_seen) = DATE('now')
+            WHERE DATE(last_seen) = DATE('now', 'localtime')
         ''')
         daily_active = cursor.fetchone()[0]
         
@@ -134,7 +137,7 @@ async def get_user_stats():
         cursor.execute('''
             SELECT COUNT(*) 
             FROM user_stats 
-            WHERE DATE(last_seen) >= DATE('now', '-7 days')
+            WHERE DATE(last_seen) >= DATE('now', 'localtime', '-7 days')
         ''')
         weekly_active = cursor.fetchone()[0]
         

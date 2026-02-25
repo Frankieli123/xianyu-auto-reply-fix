@@ -17,6 +17,9 @@ import pandas as pd
 import io
 import asyncio
 from collections import defaultdict
+from utils.timezone_utils import apply_beijing_timezone
+
+apply_beijing_timezone()
 
 import cookie_manager
 from db_manager import db_manager
@@ -1662,9 +1665,13 @@ async def send_message_api(request: SendMessageRequest):
                     message=f"参数 {param_name} 不能为空"
                 )
 
-        # 直接获取XianyuLive实例，跳过cookie_manager检查
+        # 优先使用CookieManager中的运行实例，避免被临时实例污染
         from XianyuAutoAsync import XianyuLive, ConnectionState
-        live_instance = XianyuLive.get_instance(cleaned_cookie_id)
+        live_instance = None
+        if cookie_manager.manager:
+            live_instance = cookie_manager.manager.get_xianyu_instance(cleaned_cookie_id)
+        if not live_instance:
+            live_instance = XianyuLive.get_instance(cleaned_cookie_id)
 
         if not live_instance:
             logger.warning(f"账号实例不存在或未连接: {cleaned_cookie_id}")
@@ -1948,9 +1955,11 @@ async def send_customer_service_message(
         reject("账号不存在或无权限", status_code=404)
 
     from XianyuAutoAsync import XianyuLive, ConnectionState
-    live_instance = XianyuLive.get_instance(normalized_cookie_id)
-    if not live_instance and cookie_manager.manager:
+    live_instance = None
+    if cookie_manager.manager:
         live_instance = cookie_manager.manager.get_xianyu_instance(normalized_cookie_id)
+    if not live_instance:
+        live_instance = XianyuLive.get_instance(normalized_cookie_id)
 
     if not live_instance:
         reject(f"账号 {normalized_cookie_id} 未运行，请先启动账号")

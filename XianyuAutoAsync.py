@@ -3532,6 +3532,12 @@ class XianyuLive:
                 if not item_id or item_id.startswith('auto_'):
                     continue
 
+                item_status_raw = item.get('item_status', -1)
+                try:
+                    item_status = int(item_status_raw) if item_status_raw is not None else -1
+                except (ValueError, TypeError):
+                    item_status = -1
+
                 # 构造商品详情数据
                 item_detail = {
                     'title': item.get('title', ''),
@@ -3539,7 +3545,7 @@ class XianyuLive:
                     'price_text': item.get('price_text', ''),
                     'category_id': item.get('category_id', ''),
                     'auction_type': item.get('auction_type', ''),
-                    'item_status': item.get('item_status', 0),
+                    'item_status': item_status,
                     'detail_url': item.get('detail_url', ''),
                     'pic_info': item.get('pic_info', {}),
                     'detail_params': item.get('detail_params', {}),
@@ -3558,7 +3564,8 @@ class XianyuLive:
                         'item_id': item_id,
                         'item_title': item.get('title', ''),
                         'item_price': item.get('price_text', ''),
-                        'item_category': str(item.get('category_id', ''))
+                        'item_category': str(item.get('category_id', '')),
+                        'item_status': item_status
                     })
                     logger.debug(f"商品 {item_id} 已存在，将更新标题和价格")
                 else:
@@ -3570,7 +3577,8 @@ class XianyuLive:
                         'item_description': '',  # 暂时为空
                         'item_category': str(item.get('category_id', '')),
                         'item_price': item.get('price_text', ''),
-                        'item_detail': json.dumps(item_detail, ensure_ascii=False)
+                        'item_detail': json.dumps(item_detail, ensure_ascii=False),
+                        'item_status': item_status
                     })
                     
                     # 新商品需要获取详情
@@ -9988,6 +9996,12 @@ Cookie数量: {cookie_count}
                         else:
                             price_text = (pre_text_str + price_raw_str).replace('￥￥', '￥').replace('¥¥', '¥')
 
+                        item_status_raw = card_data.get('itemStatus')
+                        try:
+                            item_status = int(item_status_raw) if item_status_raw is not None else -1
+                        except (ValueError, TypeError):
+                            item_status = -1
+
                         # 提取商品基本信息
                         item_info = {
                             'id': card_data.get('id', ''),
@@ -9996,7 +10010,7 @@ Cookie数量: {cookie_count}
                             'price_text': price_text,
                             'category_id': card_data.get('categoryId', ''),
                             'auction_type': card_data.get('auctionType', ''),
-                            'item_status': card_data.get('itemStatus', 0),
+                            'item_status': item_status,
                             'detail_url': card_data.get('detailUrl', ''),
                             'pic_info': card_data.get('picInfo', {}),
                             'detail_params': card_data.get('detailParams', {}),

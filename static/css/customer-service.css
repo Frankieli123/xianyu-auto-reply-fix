@@ -233,65 +233,55 @@
 
 .cs-message-row {
   display: flex;
+  padding: 0 0.2rem;
 }
 
 .cs-message-row.in {
   justify-content: flex-start;
+  padding-right: 2.6rem;
 }
 
 .cs-message-row.out {
   justify-content: flex-end;
+  padding-left: 2.6rem;
 }
 
 .cs-message-bubble {
-  max-width: 78%;
-  border-radius: 14px;
-  border: 1px solid #dbe5f1;
+  max-width: min(78%, 560px);
+  border-radius: 16px 16px 4px 16px;
+  border: 1px solid #d7e2f0;
   background: #ffffff;
-  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.09);
   overflow: hidden;
 }
 
 .cs-message-row.out .cs-message-bubble {
-  background: linear-gradient(135deg, #2563eb, #1d4ed8);
-  border-color: #1d4ed8;
-  box-shadow: 0 10px 22px rgba(29, 78, 216, 0.28);
+  border-radius: 16px 16px 4px 16px;
+  background: #2563eb;
+  border-color: #2563eb;
+  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.3);
 }
 
-.cs-message-meta {
-  padding: 0.45rem 0.7rem 0.2rem;
-  font-size: 0.68rem;
-  color: #64748b;
-}
-
-.cs-message-row.out .cs-message-meta {
-  color: rgba(219, 234, 254, 0.95);
+.cs-message-row.in .cs-message-bubble {
+  border-radius: 16px 16px 16px 4px;
 }
 
 .cs-message-part {
   position: relative;
-  padding: 0.15rem 0.7rem 0.46rem;
-}
-
-.cs-message-part + .cs-message-part {
-  border-top: 1px dashed #dbe5f1;
-}
-
-.cs-message-row.out .cs-message-part + .cs-message-part {
-  border-top-color: rgba(191, 219, 254, 0.35);
+  padding: 0.52rem 0.8rem;
 }
 
 .cs-message-content {
   padding: 0;
   color: #0f172a;
-  font-size: 0.86rem;
+  font-size: 0.88rem;
   white-space: pre-wrap;
   word-break: break-word;
-  line-height: 1.38;
+  line-height: 1.42;
 }
 
 .cs-message-row.out .cs-message-content {
-  color: #eff6ff;
+  color: #f8fbff;
 }
 
 .cs-message-image {
@@ -301,20 +291,9 @@
 .cs-message-image img {
   max-width: 280px;
   max-height: 280px;
-  border-radius: 10px;
-  border: 1px solid #dbe5f1;
+  border-radius: 11px;
+  border: 1px solid #d7e2f0;
   background: #ffffff;
-}
-
-.cs-message-time {
-  text-align: right;
-  margin-top: 0.28rem;
-  font-size: 0.62rem;
-  color: #94a3b8;
-}
-
-.cs-message-row.out .cs-message-time {
-  color: rgba(219, 234, 254, 0.85);
 }
 
 .cs-composer {
@@ -554,6 +533,23 @@
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.14);
 }
 
+.cs-composer #csMessageInput {
+  font-size: 0.86rem;
+  line-height: 1.38;
+}
+
+.cs-composer #csMessageInput::placeholder {
+  font-size: 0.8rem;
+  line-height: 1.25;
+  color: #94a3b8;
+}
+
+.cs-composer #csMessageInput::-webkit-input-placeholder {
+  font-size: 0.8rem;
+  line-height: 1.25;
+  color: #94a3b8;
+}
+
 .cs-composer-actions {
   margin-top: 0.6rem;
   display: flex;
@@ -748,6 +744,14 @@
 
   .cs-message-list {
     padding: 0.8rem;
+  }
+
+  .cs-message-row.in {
+    padding-right: 1.2rem;
+  }
+
+  .cs-message-row.out {
+    padding-left: 1.2rem;
   }
 
   .cs-message-bubble {

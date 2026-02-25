@@ -9,6 +9,7 @@ import os
 import sys
 import shutil
 from pathlib import Path
+from utils.timezone_utils import apply_beijing_timezone
 
 # 设置标准输出编码为UTF-8（Windows兼容）
 def _setup_console_encoding():
@@ -52,6 +53,8 @@ def _setup_console_encoding():
 
 # 在程序启动时设置编码
 _setup_console_encoding()
+# 强制使用北京时间（UTC+8）
+apply_beijing_timezone()
 
 # 定义ASCII安全字符（备用方案）
 _OK = '[OK]'

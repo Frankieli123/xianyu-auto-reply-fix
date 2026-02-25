@@ -29,6 +29,9 @@ let currentItemsPage = 1; // 当前页码
 let itemsPerPage = 20; // 每页显示数量
 let totalItemsPages = 0; // 总页数
 let currentSearchKeyword = ''; // 当前搜索关键词
+const ITEM_STATUS_FILTER_STORAGE_KEY = 'items_status_filter';
+const DEFAULT_ITEM_STATUS_FILTER = '0';
+let currentItemStatusFilter = localStorage.getItem(ITEM_STATUS_FILTER_STORAGE_KEY) ?? DEFAULT_ITEM_STATUS_FILTER;
 
 // 订单列表搜索和分页相关变量
 let allOrdersData = []; // 存储所有订单数据
@@ -6061,9 +6064,95 @@ async function refreshTodayDeliveryCount() {
     }
 }
 
+function getDeliveryRuleMatchMode(prefix) {
+    const checked = document.querySelector(`input[name="${prefix}RuleMatchMode"]:checked`);
+    return checked ? checked.value : 'keyword';
+}
+
+function setDeliveryRuleMatchMode(prefix, mode) {
+    const normalizedMode = mode === 'item' ? 'item' : 'keyword';
+    const selector = `input[name="${prefix}RuleMatchMode"][value="${normalizedMode}"]`;
+    const radio = document.querySelector(selector);
+    if (radio) {
+        radio.checked = true;
+    }
+}
+
+function toggleDeliveryRuleMatchMode(prefix, resetInactive = false) {
+    const mode = getDeliveryRuleMatchMode(prefix);
+    const isAdd = prefix === 'add';
+
+    const keywordFields = document.getElementById(isAdd ? 'addKeywordMatchFields' : 'editKeywordMatchFields');
+    const itemFields = document.getElementById(isAdd ? 'addItemMatchFields' : 'editItemMatchFields');
+    const keywordInput = document.getElementById(isAdd ? 'productKeyword' : 'editProductKeyword');
+    const manualItemInput = document.getElementById(isAdd ? 'ruleItemIdManual' : 'editRuleItemIdManual');
+    const itemSelect = document.getElementById(isAdd ? 'ruleItemId' : 'editRuleItemId');
+
+    if (keywordFields) {
+        keywordFields.style.display = mode === 'keyword' ? 'block' : 'none';
+    }
+    if (itemFields) {
+        itemFields.style.display = mode === 'item' ? 'block' : 'none';
+    }
+
+    if (resetInactive) {
+        if (mode === 'keyword') {
+            if (manualItemInput) manualItemInput.value = '';
+            if (itemSelect) itemSelect.value = '';
+        } else {
+            if (keywordInput) keywordInput.value = '';
+        }
+    }
+}
+
+function bindDeliveryRuleItemInputSync(prefix) {
+    const isAdd = prefix === 'add';
+    const manualItemInput = document.getElementById(isAdd ? 'ruleItemIdManual' : 'editRuleItemIdManual');
+    const itemSelect = document.getElementById(isAdd ? 'ruleItemId' : 'editRuleItemId');
+
+    if (!manualItemInput || !itemSelect || manualItemInput.dataset.syncBound === '1') {
+        return;
+    }
+
+    manualItemInput.addEventListener('input', () => {
+        if (manualItemInput.value.trim()) {
+            itemSelect.value = '';
+        }
+    });
+
+    itemSelect.addEventListener('change', () => {
+        const selected = (itemSelect.value || '').trim();
+        if (selected) {
+            manualItemInput.value = selected;
+        }
+    });
+
+    manualItemInput.dataset.syncBound = '1';
+}
+
+function getDeliveryRuleItemStatus(item) {
+    const candidates = [
+        item?.item_status,
+        item?.itemStatus,
+        item?.status
+    ];
+
+    for (const candidate of candidates) {
+        const parsed = parseItemStatus(candidate);
+        if (parsed !== null) {
+            return parsed;
+        }
+    }
+    return -1;
+}
+
 // 显示添加发货规则模态框
 async function showAddDeliveryRuleModal() {
     document.getElementById('addDeliveryRuleForm').reset();
+    setDeliveryRuleMatchMode('add', 'keyword');
+    bindDeliveryRuleItemInputSync('add');
+    toggleDeliveryRuleMatchMode('add', true);
+
     await Promise.all([
         loadCardsForSelect(),
         loadDeliveryRuleItemsForSelect('ruleItemId')
@@ -6143,7 +6232,7 @@ async function loadDeliveryRuleItemsForSelect(selectId, selectedItemId = '') {
     }
 
     const preserveValue = selectedItemId || select.value || '';
-    select.innerHTML = '<option value="">不指定商品（使用关键字匹配）</option>';
+    select.innerHTML = '<option value="">请选择在售商品</option>';
 
     try {
         const response = await fetch(`${apiBase}/items`, {
@@ -6165,9 +6254,10 @@ async function loadDeliveryRuleItemsForSelect(selectId, selectedItemId = '') {
 
         const data = await response.json();
         const items = Array.isArray(data.items) ? data.items : [];
+        const onSaleItems = items.filter(item => getDeliveryRuleItemStatus(item) === 0);
         const seen = new Set();
 
-        items.forEach(item => {
+        onSaleItems.forEach(item => {
             const itemId = (item.item_id || '').trim();
             if (!itemId || seen.has(itemId)) {
                 return;
@@ -6186,7 +6276,7 @@ async function loadDeliveryRuleItemsForSelect(selectId, selectedItemId = '') {
             if (!found) {
                 const fallbackOption = document.createElement('option');
                 fallbackOption.value = preserveValue;
-                fallbackOption.textContent = `${preserveValue} (当前规则商品ID)`;
+                fallbackOption.textContent = `${preserveValue} (当前规则商品ID，非在售)`;
                 select.appendChild(fallbackOption);
             }
             select.value = preserveValue;
@@ -6206,21 +6296,35 @@ async function loadDeliveryRuleItemsForSelect(selectId, selectedItemId = '') {
 // 保存发货规则
 async function saveDeliveryRule() {
     try {
-    const keyword = document.getElementById('productKeyword').value.trim();
-    const itemId = (document.getElementById('ruleItemId')?.value || '').trim();
+    const mode = getDeliveryRuleMatchMode('add');
+    const keywordInput = (document.getElementById('productKeyword')?.value || '').trim();
+    const manualItemId = (document.getElementById('ruleItemIdManual')?.value || '').trim();
+    const selectedItemId = (document.getElementById('ruleItemId')?.value || '').trim();
+    const itemId = manualItemId || selectedItemId;
+    const keyword = mode === 'keyword' ? keywordInput : '';
     const cardId = document.getElementById('selectedCard').value;
     const deliveryCount = document.getElementById('deliveryCount').value || 1;
     const enabled = document.getElementById('ruleEnabled').checked;
     const description = document.getElementById('ruleDescription').value;
 
-    if ((!keyword && !itemId) || !cardId) {
-        showToast('请至少填写商品关键字或商品ID，并选择卡券', 'warning');
+    if (!cardId) {
+        showToast('请选择卡券', 'warning');
+        return;
+    }
+
+    if (mode === 'keyword' && !keyword) {
+        showToast('请选择关键词匹配并填写商品关键字', 'warning');
+        return;
+    }
+
+    if (mode === 'item' && !itemId) {
+        showToast('请选择商品ID匹配并输入或选择商品ID', 'warning');
         return;
     }
 
     const ruleData = {
         keyword: keyword,
-        item_id: itemId || null,
+        item_id: mode === 'item' ? itemId : null,
         card_id: parseInt(cardId),
         delivery_count: parseInt(deliveryCount),
         enabled: enabled,
@@ -6630,9 +6734,12 @@ async function editDeliveryRule(ruleId) {
         // 填充编辑表单
         document.getElementById('editRuleId').value = rule.id;
         document.getElementById('editProductKeyword').value = rule.keyword || '';
+        document.getElementById('editRuleItemIdManual').value = rule.item_id || '';
         document.getElementById('editDeliveryCount').value = rule.delivery_count || 1;
         document.getElementById('editRuleEnabled').checked = rule.enabled;
         document.getElementById('editRuleDescription').value = rule.description || '';
+
+        bindDeliveryRuleItemInputSync('edit');
 
         // 加载卡券和商品选项并设置当前值
         await Promise.all([
@@ -6641,6 +6748,10 @@ async function editDeliveryRule(ruleId) {
         ]);
         document.getElementById('editSelectedCard').value = rule.card_id;
         document.getElementById('editRuleItemId').value = rule.item_id || '';
+
+        const mode = rule.item_id ? 'item' : 'keyword';
+        setDeliveryRuleMatchMode('edit', mode);
+        toggleDeliveryRuleMatchMode('edit', false);
 
         // 显示模态框
         const modal = new bootstrap.Modal(document.getElementById('editDeliveryRuleModal'));
@@ -6721,21 +6832,36 @@ async function loadCardsForEditSelect() {
 async function updateDeliveryRule() {
     try {
     const ruleId = document.getElementById('editRuleId').value;
-    const keyword = document.getElementById('editProductKeyword').value.trim();
-    const itemId = (document.getElementById('editRuleItemId')?.value || '').trim();
+    const mode = getDeliveryRuleMatchMode('edit');
+    const keywordInput = (document.getElementById('editProductKeyword')?.value || '').trim();
+    const manualItemId = (document.getElementById('editRuleItemIdManual')?.value || '').trim();
+    const selectedItemId = (document.getElementById('editRuleItemId')?.value || '').trim();
+    const itemId = manualItemId || selectedItemId;
+    // 编辑时保留关键词输入值，避免 item 模式保存时误清空历史关键词
+    const keyword = keywordInput;
     const cardId = document.getElementById('editSelectedCard').value;
     const deliveryCount = document.getElementById('editDeliveryCount').value || 1;
     const enabled = document.getElementById('editRuleEnabled').checked;
     const description = document.getElementById('editRuleDescription').value;
 
-    if ((!keyword && !itemId) || !cardId) {
-        showToast('请至少填写商品关键字或商品ID，并选择卡券', 'warning');
+    if (!cardId) {
+        showToast('请选择卡券', 'warning');
+        return;
+    }
+
+    if (mode === 'keyword' && !keyword) {
+        showToast('请选择关键词匹配并填写商品关键字', 'warning');
+        return;
+    }
+
+    if (mode === 'item' && !itemId) {
+        showToast('请选择商品ID匹配并输入或选择商品ID', 'warning');
         return;
     }
 
     const ruleData = {
         keyword: keyword,
-        item_id: itemId,
+        item_id: mode === 'item' ? itemId : null,
         card_id: parseInt(cardId),
         delivery_count: parseInt(deliveryCount),
         enabled: enabled,
@@ -7906,16 +8032,18 @@ function displayItems(items) {
 // 应用搜索过滤
 function applyItemsFilter() {
     const searchKeyword = currentSearchKeyword.toLowerCase().trim();
+    filteredItemsData = allItemsData.filter(item => {
+        const title = (item.item_title || '').toLowerCase();
+        const detail = getItemDetailText(item.item_detail || '').toLowerCase();
+        const matchesSearch = !searchKeyword || title.includes(searchKeyword) || detail.includes(searchKeyword);
 
-    if (!searchKeyword) {
-        filteredItemsData = [...allItemsData];
-    } else {
-        filteredItemsData = allItemsData.filter(item => {
-            const title = (item.item_title || '').toLowerCase();
-            const detail = getItemDetailText(item.item_detail || '').toLowerCase();
-            return title.includes(searchKeyword) || detail.includes(searchKeyword);
-        });
-    }
+        if (currentItemStatusFilter === '') {
+            return matchesSearch;
+        }
+
+        const itemStatus = getItemStatusValue(item);
+        return matchesSearch && String(itemStatus) === currentItemStatusFilter;
+    });
 
     // 重置到第一页
     currentItemsPage = 1;
@@ -7944,12 +8072,137 @@ function getItemDetailText(itemDetail) {
     }
 }
 
+function parseItemStatus(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+    }
+
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (!trimmed) {
+            return null;
+        }
+        if (/^-?\d+$/.test(trimmed)) {
+            return Number(trimmed);
+        }
+
+        const normalized = trimmed.toLowerCase();
+        const statusAlias = {
+            on_sale: 0,
+            onsale: 0,
+            selling: 0,
+            active: 0,
+            off_shelf: 1,
+            offshelf: 1,
+            inactive: 1,
+            deleted: 2,
+            delete: 2,
+            removed: 2
+        };
+
+        if (statusAlias[normalized] !== undefined) {
+            return statusAlias[normalized];
+        }
+    }
+
+    return null;
+}
+
+function getItemStatusValue(item) {
+    const topLevelCandidates = [
+        item?.item_status,
+        item?.itemStatus,
+        item?.status
+    ];
+
+    for (const candidate of topLevelCandidates) {
+        const parsed = parseItemStatus(candidate);
+        if (parsed !== null) {
+            return parsed;
+        }
+    }
+
+    const parsedDetail = item?.item_detail_parsed;
+    if (parsedDetail && typeof parsedDetail === 'object') {
+        const detailCandidates = [
+            parsedDetail.item_status,
+            parsedDetail.itemStatus,
+            parsedDetail.status
+        ];
+        for (const candidate of detailCandidates) {
+            const parsed = parseItemStatus(candidate);
+            if (parsed !== null) {
+                return parsed;
+            }
+        }
+    }
+
+    if (typeof item?.item_detail === 'string' && item.item_detail) {
+        try {
+            const detailJson = JSON.parse(item.item_detail);
+            if (detailJson && typeof detailJson === 'object') {
+                const detailCandidates = [
+                    detailJson.item_status,
+                    detailJson.itemStatus,
+                    detailJson.status
+                ];
+                for (const candidate of detailCandidates) {
+                    const parsed = parseItemStatus(candidate);
+                    if (parsed !== null) {
+                        return parsed;
+                    }
+                }
+            }
+        } catch (e) {
+            // ignore
+        }
+    }
+
+    return -1;
+}
+
+function getItemStatusText(status) {
+    switch (status) {
+    case 0:
+        return '在售';
+    case 1:
+        return '下架';
+    case 2:
+        return '删除';
+    case -1:
+        return '未知';
+    default:
+        return `状态(${status})`;
+    }
+}
+
+function getItemStatusBadgeClass(status) {
+    switch (status) {
+    case 0:
+        return 'bg-success';
+    case 1:
+        return 'bg-warning text-dark';
+    case 2:
+        return 'bg-danger';
+    default:
+        return 'bg-secondary';
+    }
+}
+
+function getItemStatusFilterText(statusValue) {
+    if (statusValue === '') {
+        return '全部状态';
+    }
+    const parsed = parseItemStatus(statusValue);
+    return getItemStatusText(parsed === null ? -1 : parsed);
+}
+
 // 显示当前页的商品数据
 function displayCurrentPageItems() {
     const tbody = document.getElementById('itemsTableBody');
 
     if (!filteredItemsData || filteredItemsData.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">暂无商品数据</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="11" class="text-center text-muted">暂无商品数据</td></tr>';
         resetItemsSelection();
         return;
     }
@@ -7985,6 +8238,9 @@ function displayCurrentPageItems() {
             '<span class="badge bg-success">已开启</span>' :
             '<span class="badge bg-secondary">已关闭</span>';
 
+        const itemStatus = getItemStatusValue(item);
+        const itemStatusDisplay = `<span class="badge ${getItemStatusBadgeClass(itemStatus)}">${escapeHtml(getItemStatusText(itemStatus))}</span>`;
+
         return `
             <tr>
             <td>
@@ -7998,6 +8254,7 @@ function displayCurrentPageItems() {
             <td title="${escapeHtml(item.item_title || '未设置')}">${escapeHtml(itemTitleDisplay)}</td>
             <td title="${escapeHtml(getItemDetailText(item.item_detail || ''))}">${escapeHtml(itemDetailDisplay)}</td>
             <td>${escapeHtml(item.item_price || '未设置')}</td>
+            <td>${itemStatusDisplay}</td>
             <td>${multiSpecDisplay}</td>
             <td>${multiQuantityDeliveryDisplay}</td>
             <td>${formatDateTime(item.updated_at)}</td>
@@ -8053,6 +8310,16 @@ function filterItems() {
     updateItemsPagination();
 }
 
+function filterItemsByStatus() {
+    const statusSelect = document.getElementById('itemStatusFilter');
+    currentItemStatusFilter = statusSelect ? statusSelect.value : '';
+    localStorage.setItem(ITEM_STATUS_FILTER_STORAGE_KEY, currentItemStatusFilter);
+
+    applyItemsFilter();
+    displayCurrentPageItems();
+    updateItemsPagination();
+}
+
 // 更新搜索统计信息
 function updateItemsSearchStats() {
     const statsElement = document.getElementById('itemSearchStats');
@@ -8060,8 +8327,18 @@ function updateItemsSearchStats() {
 
     if (!statsElement || !statsTextElement) return;
 
-    if (currentSearchKeyword) {
-        statsTextElement.textContent = `搜索"${currentSearchKeyword}"，找到 ${filteredItemsData.length} 个商品`;
+    const hasKeyword = !!currentSearchKeyword.trim();
+    const hasStatusFilter = currentItemStatusFilter !== '';
+
+    if (hasKeyword || hasStatusFilter) {
+        const filters = [];
+        if (hasKeyword) {
+            filters.push(`搜索"${currentSearchKeyword}"`);
+        }
+        if (hasStatusFilter) {
+            filters.push(`状态:${getItemStatusFilterText(currentItemStatusFilter)}`);
+        }
+        statsTextElement.textContent = `${filters.join('，')}，找到 ${filteredItemsData.length} 个商品`;
         statsElement.style.display = 'block';
     } else {
         statsElement.style.display = 'none';
@@ -8163,6 +8440,17 @@ function initItemsSearch() {
     // 避免重复初始化
     if (itemsSearchInitialized) return;
     
+    // 初始化状态筛选
+    const statusSelect = document.getElementById('itemStatusFilter');
+    if (statusSelect) {
+        const validStatusFilters = new Set(['', '0', '1', '2', '-1']);
+        if (!validStatusFilters.has(currentItemStatusFilter)) {
+            currentItemStatusFilter = DEFAULT_ITEM_STATUS_FILTER;
+        }
+        statusSelect.value = currentItemStatusFilter;
+        statusSelect.addEventListener('change', filterItemsByStatus);
+    }
+
     // 初始化分页大小
     const pageSizeSelect = document.getElementById('itemsPageSize');
     if (pageSizeSelect) {
@@ -8196,8 +8484,47 @@ function initItemsSearch() {
 
 // 刷新商品列表
 async function refreshItems() {
+    const cookieSelect = document.getElementById('itemCookieFilter');
+    const selectedCookieId = cookieSelect ? cookieSelect.value : '';
+
+    if (selectedCookieId) {
+        const pageInput = document.getElementById('pageNumber');
+        const pageNumber = Math.max(1, parseInt(pageInput?.value || '1') || 1);
+
+        try {
+            const response = await fetch(`${apiBase}/items/get-by-page`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${authToken}`
+                },
+                body: JSON.stringify({
+                    cookie_id: selectedCookieId,
+                    page_number: pageNumber,
+                    page_size: itemsPerPage
+                })
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                if (!data.success) {
+                    showToast(data.message || '同步商品状态失败，仅刷新本地列表', 'warning');
+                }
+            } else {
+                showToast('同步商品状态失败，仅刷新本地列表', 'warning');
+            }
+        } catch (e) {
+            console.error('同步商品状态失败:', e);
+            showToast('同步商品状态失败，仅刷新本地列表', 'warning');
+        }
+    }
+
     await refreshItemsData();
-    showToast('商品列表已刷新', 'success');
+    if (selectedCookieId) {
+        showToast('商品列表与状态已刷新', 'success');
+    } else {
+        showToast('商品列表已刷新（未选择账号时不主动同步状态）', 'info');
+    }
 }
 
 // 获取商品信息
@@ -15843,7 +16170,6 @@ const CUSTOMER_SERVICE_STARRED_STORAGE_KEY = 'customer_service_starred_conversat
 const CUSTOMER_SERVICE_TEMPLATE_STORAGE_KEY = 'customer_service_templates_v1';
 const CUSTOMER_SERVICE_IMAGE_LIBRARY_STORAGE_KEY = 'customer_service_image_library_v1';
 const CUSTOMER_SERVICE_LEGACY_QUICK_REPLY_STORAGE_KEY = 'customer_service_quick_replies_v1';
-const CUSTOMER_SERVICE_GROUP_WINDOW_MS = 3 * 60 * 1000;
 const CUSTOMER_SERVICE_INPUT_MAX_HEIGHT = 180;
 const CUSTOMER_SERVICE_MAX_TEMPLATE_COUNT = 50;
 const CUSTOMER_SERVICE_MAX_IMAGE_LIBRARY_COUNT = 200;
@@ -16767,47 +17093,14 @@ function renderCustomerServiceConversationHeader() {
 }
 
 function buildCustomerServiceMessageGroups(messages) {
-    const groups = [];
-    for (const raw of messages) {
-        const direction = raw.direction === 'out' ? 'out' : 'in';
-        const senderName = direction === 'out'
-            ? '我'
-            : (raw.peer_user_name || customerServiceState.selectedPeerUserName || raw.peer_user_id || '对方');
-        const messageTime = Number(raw.message_time || 0);
-        const normalized = {
-            direction,
-            senderName,
+    return (messages || []).map(raw => ({
+        direction: raw.direction === 'out' ? 'out' : 'in',
+        item: {
             message_type: raw.message_type || 'text',
             content: raw.content || '',
-            image_url: raw.image_url || '',
-            message_time: messageTime
-        };
-
-        const previous = groups[groups.length - 1];
-        const shouldMerge = Boolean(
-            previous &&
-            previous.direction === normalized.direction &&
-            previous.senderName === normalized.senderName &&
-            (
-                !normalized.message_time ||
-                !previous.lastMessageTime ||
-                Math.abs(normalized.message_time - previous.lastMessageTime) <= CUSTOMER_SERVICE_GROUP_WINDOW_MS
-            )
-        );
-
-        if (shouldMerge) {
-            previous.items.push(normalized);
-            previous.lastMessageTime = normalized.message_time || previous.lastMessageTime;
-        } else {
-            groups.push({
-                direction: normalized.direction,
-                senderName: normalized.senderName,
-                items: [normalized],
-                lastMessageTime: normalized.message_time
-            });
+            image_url: raw.image_url || ''
         }
-    }
-    return groups;
+    }));
 }
 
 async function loadCustomerServiceMessages(options = {}) {
@@ -16849,29 +17142,20 @@ function renderCustomerServiceMessages(messages) {
 
     const groups = buildCustomerServiceMessageGroups(messages);
     container.innerHTML = groups.map(group => {
-        const itemsHtml = group.items.map(item => {
-            const shortTime = formatCustomerServiceTime(item.message_time);
-            const fullTime = formatCustomerServiceFullTime(item.message_time);
-            const contentHtml = item.message_type === 'image'
-                ? `
-                    <div class="cs-message-image">
-                        <img src="${escapeCustomerServiceHtml(item.image_url || '')}" alt="图片消息" loading="lazy">
-                    </div>
-                  `
-                : `<div class="cs-message-content">${escapeCustomerServiceHtml(item.content || '')}</div>`;
-            return `
-                <div class="cs-message-part" title="${escapeCustomerServiceHtml(fullTime)}">
-                    ${contentHtml}
-                    <div class="cs-message-time">${escapeCustomerServiceHtml(shortTime)}</div>
+        const item = group.item || {};
+        const contentHtml = item.message_type === 'image'
+            ? `
+                <div class="cs-message-image">
+                    <img src="${escapeCustomerServiceHtml(item.image_url || '')}" alt="图片消息" loading="lazy">
                 </div>
-            `;
-        }).join('');
-
+              `
+            : `<div class="cs-message-content">${escapeCustomerServiceHtml(item.content || '')}</div>`;
         return `
             <div class="cs-message-row ${group.direction}">
-                <div class="cs-message-bubble ${group.items.length > 1 ? 'grouped' : ''}">
-                    <div class="cs-message-meta">${escapeCustomerServiceHtml(group.senderName)}</div>
-                    ${itemsHtml}
+                <div class="cs-message-bubble">
+                    <div class="cs-message-part">
+                        ${contentHtml}
+                    </div>
                 </div>
             </div>
         `;
