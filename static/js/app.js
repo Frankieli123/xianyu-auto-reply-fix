@@ -77,6 +77,10 @@ function showSection(sectionName) {
         activeMenuLink.classList.add('active');
     }
 
+    if (sectionName === 'customer-service') {
+        clearCustomerServiceUnreadNotifications();
+    }
+
     // 根据不同section加载对应数据
     switch(sectionName) {
     case 'dashboard':        // 【仪表盘菜单】
@@ -16432,6 +16436,7 @@ const customerServiceState = {
     documentClickBound: false,
     notificationStateInitialized: false,
     lastInboundMessageTimeByConversation: {},
+    unreadConversationKeys: new Set(),
     lastNotificationSoundAt: 0,
     notificationAudioContext: null
 };
@@ -16443,6 +16448,26 @@ function getCustomerServiceConversationKey(cookieId, chatId) {
 function isCustomerServiceSectionActive() {
     const section = document.getElementById('customer-service-section');
     return !!section && section.classList.contains('active');
+}
+
+function renderCustomerServiceMenuBadge() {
+    const badge = document.getElementById('customerServiceMenuBadge');
+    if (!badge) return;
+
+    const count = customerServiceState.unreadConversationKeys.size;
+    if (count > 0) {
+        badge.textContent = count > 99 ? '99+' : String(count);
+        badge.classList.remove('d-none');
+    } else {
+        badge.textContent = '0';
+        badge.classList.add('d-none');
+    }
+}
+
+function clearCustomerServiceUnreadNotifications() {
+    if (!customerServiceState.unreadConversationKeys.size) return;
+    customerServiceState.unreadConversationKeys.clear();
+    renderCustomerServiceMenuBadge();
 }
 
 function playCustomerServiceNotificationSound() {
@@ -16465,17 +16490,41 @@ function playCustomerServiceNotificationSound() {
             ctx.resume().catch(() => {});
         }
 
-        const oscillator = ctx.createOscillator();
-        const gainNode = ctx.createGain();
-        oscillator.type = 'sine';
-        oscillator.frequency.setValueAtTime(980, ctx.currentTime);
-        gainNode.gain.setValueAtTime(0.0001, ctx.currentTime);
-        gainNode.gain.exponentialRampToValueAtTime(0.1, ctx.currentTime + 0.01);
-        gainNode.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.16);
-        oscillator.connect(gainNode);
-        gainNode.connect(ctx.destination);
-        oscillator.start();
-        oscillator.stop(ctx.currentTime + 0.17);
+        const createBellNote = (frequency, startOffset, duration, volume) => {
+            const startAt = ctx.currentTime + startOffset;
+            const endAt = startAt + duration;
+
+            const mainOsc = ctx.createOscillator();
+            const overtoneOsc = ctx.createOscillator();
+            const mainGain = ctx.createGain();
+            const overtoneGain = ctx.createGain();
+
+            mainOsc.type = 'sine';
+            overtoneOsc.type = 'triangle';
+            mainOsc.frequency.setValueAtTime(frequency, startAt);
+            overtoneOsc.frequency.setValueAtTime(frequency * 2, startAt);
+
+            mainGain.gain.setValueAtTime(0.0001, startAt);
+            mainGain.gain.exponentialRampToValueAtTime(volume, startAt + 0.012);
+            mainGain.gain.exponentialRampToValueAtTime(0.0001, endAt);
+
+            overtoneGain.gain.setValueAtTime(0.0001, startAt);
+            overtoneGain.gain.exponentialRampToValueAtTime(volume * 0.28, startAt + 0.012);
+            overtoneGain.gain.exponentialRampToValueAtTime(0.0001, endAt);
+
+            mainOsc.connect(mainGain);
+            overtoneOsc.connect(overtoneGain);
+            mainGain.connect(ctx.destination);
+            overtoneGain.connect(ctx.destination);
+
+            mainOsc.start(startAt);
+            overtoneOsc.start(startAt);
+            mainOsc.stop(endAt);
+            overtoneOsc.stop(endAt);
+        };
+
+        createBellNote(1046.5, 0, 0.24, 0.42);
+        createBellNote(783.99, 0.28, 0.42, 0.36);
     } catch (error) {
         console.warn('播放客服台来消息提示音失败:', error);
     }
@@ -16484,6 +16533,7 @@ function playCustomerServiceNotificationSound() {
 function syncCustomerServiceNotificationState() {
     const currentConversationKeys = new Set();
     let hasNewInbound = false;
+    const sectionActive = isCustomerServiceSectionActive();
 
     for (const account of customerServiceState.accounts || []) {
         const accountId = String(account?.id || '').trim();
@@ -16503,6 +16553,9 @@ function syncCustomerServiceNotificationState() {
             if (inboundMessageTime > previousInboundMessageTime) {
                 if (customerServiceState.notificationStateInitialized) {
                     hasNewInbound = true;
+                    if (!sectionActive) {
+                        customerServiceState.unreadConversationKeys.add(key);
+                    }
                 }
                 customerServiceState.lastInboundMessageTimeByConversation[key] = inboundMessageTime;
             } else if (!(key in customerServiceState.lastInboundMessageTimeByConversation)) {
@@ -16516,6 +16569,18 @@ function syncCustomerServiceNotificationState() {
             delete customerServiceState.lastInboundMessageTimeByConversation[key];
         }
     }
+
+    for (const key of Array.from(customerServiceState.unreadConversationKeys)) {
+        if (!currentConversationKeys.has(key)) {
+            customerServiceState.unreadConversationKeys.delete(key);
+        }
+    }
+
+    if (sectionActive) {
+        customerServiceState.unreadConversationKeys.clear();
+    }
+
+    renderCustomerServiceMenuBadge();
 
     if (hasNewInbound) {
         playCustomerServiceNotificationSound();

@@ -132,6 +132,23 @@
   text-align: center;
 }
 
+.customer-service-menu-badge {
+  margin-left: auto;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #ff4d4f;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+}
+
 .nav-divider {
   padding: 0.5rem 1rem;
   border-top: 1px solid rgba(255,255,255,0.1);
@@ -202,7 +219,7 @@
 }
 
 .sidebar.collapsed .sidebar-brand span,
-.sidebar.collapsed .nav-link span {
+.sidebar.collapsed .nav-link span:not(.customer-service-menu-badge) {
   display: none;
 }
 
@@ -215,8 +232,16 @@
 }
 
 .sidebar.collapsed .nav-link {
+  position: relative;
   justify-content: center;
   padding: 0.75rem;
+}
+
+.sidebar.collapsed .customer-service-menu-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  margin-left: 0;
 }
 
 .sidebar.collapsed .nav-link i {
