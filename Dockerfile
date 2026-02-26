@@ -23,6 +23,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV TZ=Asia/Shanghai
 ENV DOCKER_ENV=true
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+ENV PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=120000
 
 #更换中科大源
 RUN sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list.d/debian.sources
@@ -93,12 +94,12 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple&& \
     pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-# 复制项目文件
-COPY . .
-
-# 安装Playwright浏览器（必须在复制项目文件之后）
+# 安装Playwright浏览器（放在复制项目代码前，避免代码变更触发重复下载）
 RUN playwright install chromium && \
     playwright install-deps chromium
+
+# 复制项目文件
+COPY . .
 
 # 创建必要的目录并设置权限
 RUN mkdir -p /app/logs /app/data /app/backups /app/static/uploads/images && \
