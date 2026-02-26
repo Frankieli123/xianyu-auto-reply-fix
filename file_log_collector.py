@@ -5,6 +5,7 @@
 
 import os
 import re
+import glob
 import time
 import threading
 from collections import deque
@@ -29,23 +30,10 @@ class FileLogCollector:
     
     def setup_file_monitoring(self):
         """设置文件监控"""
-        # 查找日志文件
-        possible_files = [
-            "xianyu.log",
-            "app.log", 
-            "system.log",
-            "logs/xianyu.log",
-            "logs/app.log"
-        ]
-        
-        for file_path in possible_files:
-            if os.path.exists(file_path):
-                self.log_file = file_path
-                break
-        
-        if not self.log_file:
-            # 如果没有找到现有文件，创建一个新的
-            self.log_file = "realtime.log"
+        self.cleanup_legacy_realtime_logs()
+
+        # 实时日志固定写入 logs 目录，避免 /app 根目录文件在部分挂载环境下轮转失败
+        self.log_file = str(Path("logs") / "realtime.log")
             
         # 设置loguru输出到文件
         self.setup_loguru_file_output()
@@ -68,10 +56,10 @@ class FileLogCollector:
                 self.log_file,
                 format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | {name}:{function}:{line} - {message}",
                 level="INFO",
-                rotation="10 MB",
-                retention="3 days",
-                enqueue=False,
-                buffering=1
+                # 这一路日志只用于实时监控，不做 loguru 轮转，避免 rename 在部分挂载环境报 Errno 16
+                enqueue=True,
+                buffering=1,
+                encoding="utf-8"
             )
             
             # 添加按日期轮转的日志文件输出到logs目录
@@ -91,6 +79,47 @@ class FileLogCollector:
             
         except ImportError:
             pass
+
+    def cleanup_legacy_realtime_logs(self):
+        """启动时清理旧版 realtime 日志文件（/app 根目录）。"""
+        try:
+            try:
+                from loguru import logger as loguru_logger
+            except Exception:
+                loguru_logger = None
+
+            root_candidates = {Path.cwd(), Path("/app")}
+            removed_count = 0
+            current_realtime_log = (Path("logs") / "realtime.log").resolve()
+
+            for root in root_candidates:
+                if not root.exists():
+                    continue
+
+                patterns = [
+                    str(root / "realtime.log"),
+                    str(root / "realtime.*.log"),
+                ]
+
+                for pattern in patterns:
+                    for path in glob.glob(pattern):
+                        try:
+                            file_path = Path(path)
+                            # 跳过当前新版实时日志路径（logs/realtime.log）
+                            if file_path.resolve() == current_realtime_log:
+                                continue
+                            if file_path.is_file():
+                                file_path.unlink(missing_ok=True)
+                                removed_count += 1
+                                if loguru_logger is not None:
+                                    loguru_logger.debug(f"启动清理旧版realtime日志: 已删除 {file_path}")
+                        except Exception:
+                            continue
+
+            if removed_count > 0 and loguru_logger is not None:
+                loguru_logger.info(f"启动清理旧版realtime日志完成: 删除 {removed_count} 个文件")
+        except Exception:
+            pass
     
     def monitor_file(self):
         """监控日志文件变化"""
@@ -99,6 +128,9 @@ class FileLogCollector:
                 if os.path.exists(self.log_file):
                     # 获取文件大小
                     file_size = os.path.getsize(self.log_file)
+                    if file_size < self.last_position:
+                        # 文件被外部截断/重建后，从头继续读取
+                        self.last_position = 0
                     
                     if file_size > self.last_position:
                         # 读取新增内容
