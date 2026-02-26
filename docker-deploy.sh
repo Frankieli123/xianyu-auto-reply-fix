@@ -15,6 +15,27 @@ NC='\033[0m' # No Color
 # 项目配置
 PROJECT_NAME="xianyu-auto-reply"
 COMPOSE_FILE="docker-compose.yml"
+SELECTED_COMPOSE_FILE="$COMPOSE_FILE"
+
+if docker compose version >/dev/null 2>&1; then
+    COMPOSE_CMD="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE_CMD="docker-compose"
+else
+    COMPOSE_CMD=""
+fi
+
+compose() {
+    $COMPOSE_CMD -f "$SELECTED_COMPOSE_FILE" "$@"
+}
+
+get_web_port() {
+    if [ "$SELECTED_COMPOSE_FILE" = "docker-compose-cn.yml" ]; then
+        echo "8000"
+    else
+        echo "9000"
+    fi
+}
 
 # 打印带颜色的消息
 print_info() {
@@ -42,7 +63,7 @@ check_dependencies() {
         exit 1
     fi
     
-    if ! command -v docker-compose &> /dev/null; then
+    if [ -z "$COMPOSE_CMD" ]; then
         print_error "Docker Compose 未安装，请先安装 Docker Compose"
         exit 1
     fi
@@ -81,10 +102,11 @@ build_image() {
     print_info "构建 Docker 镜像..."
     echo "是否需要使用国内镜像(y/n): " && read iscn
     if [[ $iscn == "y" ]]; then
-        docker-compose -f docker-compose-cn.yml build --no-cache
+        SELECTED_COMPOSE_FILE="docker-compose-cn.yml"
     else
-        docker-compose build --no-cache
-    fi  
+        SELECTED_COMPOSE_FILE="$COMPOSE_FILE"
+    fi
+    compose build --no-cache
     print_success "镜像构建完成"
 }
 
@@ -98,7 +120,7 @@ start_services() {
         print_info "启动基础服务..."
     fi
 
-    docker-compose $profile up -d
+    compose $profile up -d
     print_success "服务启动完成"
 
     # 等待服务就绪
@@ -106,12 +128,12 @@ start_services() {
     sleep 10
 
     # 检查服务状态
-    if docker-compose ps | grep -q "Up"; then
+    if compose ps | grep -q "Up"; then
         print_success "服务运行正常"
         show_access_info "$1"
     else
         print_error "服务启动失败"
-        docker-compose logs
+        compose logs
         exit 1
     fi
 }
@@ -119,14 +141,14 @@ start_services() {
 # 停止服务
 stop_services() {
     print_info "停止服务..."
-    docker-compose down
+    compose down
     print_success "服务已停止"
 }
 
 # 重启服务
 restart_services() {
     print_info "重启服务..."
-    docker-compose restart
+    compose restart
     print_success "服务已重启"
 }
 
@@ -134,19 +156,19 @@ restart_services() {
 show_logs() {
     local service="$1"
     if [ -z "$service" ]; then
-        docker-compose logs -f
+        compose logs -f
     else
-        docker-compose logs -f "$service"
+        compose logs -f "$service"
     fi
 }
 
 # 查看状态
 show_status() {
     print_info "服务状态:"
-    docker-compose ps
+    compose ps
     
     print_info "资源使用:"
-    docker stats --no-stream $(docker-compose ps -q)
+    docker stats --no-stream $(compose ps -q)
 }
 
 # 显示访问信息
@@ -162,8 +184,10 @@ show_access_info() {
         echo "   HTTP:  http://localhost"
         echo "   HTTPS: https://localhost (如果配置了SSL)"
     else
+        local web_port
+        web_port=$(get_web_port)
         echo "📱 访问地址:"
-        echo "   HTTP: http://localhost:8080"
+        echo "   HTTP: http://localhost:${web_port}"
     fi
     
     echo ""
@@ -183,7 +207,9 @@ show_access_info() {
 health_check() {
     print_info "执行健康检查..."
     
-    local url="http://localhost:8080/health"
+    local web_port
+    web_port=$(get_web_port)
+    local url="http://localhost:${web_port}/health"
     local max_attempts=30
     local attempt=1
     
@@ -216,7 +242,9 @@ backup_data() {
     fi
     
     # 备份配置
-    cp "$ENV_FILE" "$backup_dir/"
+    if [ -f ".env" ]; then
+        cp .env "$backup_dir/"
+    fi
     cp global_config.yml "$backup_dir/" 2>/dev/null || true
     
     print_success "数据备份完成: $backup_dir"
@@ -256,7 +284,7 @@ cleanup() {
         print_info "清理环境..."
         
         # 停止并删除容器
-        docker-compose down -v --rmi all
+        compose down -v --rmi all
         
         # 删除数据目录
         rm -rf data logs backups

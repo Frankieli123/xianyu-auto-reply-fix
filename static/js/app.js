@@ -40,6 +40,9 @@ let currentOrdersPage = 1; // 当前页码
 let ordersPerPage = 20; // 每页显示数量
 let totalOrdersPages = 0; // 总页数
 let currentOrderSearchKeyword = ''; // 当前搜索关键词
+let loadingRequestCount = 0;
+let loadingShowTimer = null;
+const LOADING_SHOW_DELAY = 120;
 
 // ================================
 // 通用功能 - 菜单切换和导航
@@ -47,32 +50,32 @@ let currentOrderSearchKeyword = ''; // 当前搜索关键词
 function showSection(sectionName) {
     console.log('切换到页面:', sectionName); // 调试信息
 
-    // 隐藏所有内容区域
-    document.querySelectorAll('.content-section').forEach(section => {
-    section.classList.remove('active');
-    });
-
-    // 移除所有菜单项的active状态
-    document.querySelectorAll('.nav-link').forEach(link => {
-    link.classList.remove('active');
-    });
-
-    // 显示选中的内容区域
     const targetSection = document.getElementById(sectionName + '-section');
-    if (targetSection) {
+    if (!targetSection) {
+        console.error('找不到页面元素:', sectionName + '-section'); // 调试信息
+        return;
+    }
+
+    if (targetSection.classList.contains('active')) {
+        return;
+    }
+
+    const currentActiveSection = document.querySelector('.content-section.active');
+    if (currentActiveSection) {
+        currentActiveSection.classList.remove('active');
+    }
+
     targetSection.classList.add('active');
     console.log('页面已激活:', sectionName + '-section'); // 调试信息
-    } else {
-    console.error('找不到页面元素:', sectionName + '-section'); // 调试信息
-    }
 
-    // 设置对应菜单项为active（修复event.target问题）
-    const menuLinks = document.querySelectorAll('.nav-link');
-    menuLinks.forEach(link => {
-    if (link.onclick && link.onclick.toString().includes(`showSection('${sectionName}')`)) {
-        link.classList.add('active');
-    }
+    document.querySelectorAll('#sidebar .sidebar-nav .nav-link').forEach(link => {
+        link.classList.remove('active');
     });
+
+    const activeMenuLink = document.querySelector(`#sidebar .nav-item[data-menu-id="${sectionName}"] .nav-link`);
+    if (activeMenuLink) {
+        activeMenuLink.classList.add('active');
+    }
 
     // 根据不同section加载对应数据
     switch(sectionName) {
@@ -170,7 +173,7 @@ function showSection(sectionName) {
     }
 
     if (sectionName !== 'customer-service') {
-        stopCustomerServicePolling();
+        startCustomerServicePolling();
     }
 }
 
@@ -1692,7 +1695,36 @@ async function deleteSpecificItem(groupId, itemIndex) {
 
 // 显示/隐藏加载动画
 function toggleLoading(show) {
-    document.getElementById('loading').classList.toggle('d-none', !show);
+    const loadingEl = document.getElementById('loading');
+    if (!loadingEl) return;
+
+    if (show) {
+        loadingRequestCount += 1;
+        if (loadingRequestCount === 1) {
+            if (loadingShowTimer) {
+                clearTimeout(loadingShowTimer);
+            }
+            loadingShowTimer = setTimeout(() => {
+                if (loadingRequestCount > 0) {
+                    loadingEl.classList.remove('d-none');
+                }
+                loadingShowTimer = null;
+            }, LOADING_SHOW_DELAY);
+        }
+        return;
+    }
+
+    if (loadingRequestCount > 0) {
+        loadingRequestCount -= 1;
+    }
+
+    if (loadingRequestCount === 0) {
+        if (loadingShowTimer) {
+            clearTimeout(loadingShowTimer);
+            loadingShowTimer = null;
+        }
+        loadingEl.classList.add('d-none');
+    }
 }
 
 // ================================
@@ -3257,6 +3289,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 初始化并加载销售仪表盘
     initDashboardFilters();
     loadDashboard();
+    startCustomerServicePolling();
 
     // 加载菜单设置并应用
     loadMenuSettings();
@@ -7058,6 +7091,8 @@ async function loadUserSettings() {
                 if (hex) hex.value = color;
                 applyThemeColor(color);
                 updatePresetSelection(color);
+            } else {
+                localStorage.removeItem('themeColor');
             }
         }
     } catch (error) {
@@ -7078,6 +7113,7 @@ function applyThemeColor(color) {
     // 计算浅色版本（用于某些UI元素）
     const lightColor = adjustBrightness(color, 40);
     document.documentElement.style.setProperty('--primary-light', lightColor);
+    localStorage.setItem('themeColor', color);
 }
 
 // 调整颜色亮度
@@ -16372,6 +16408,7 @@ const customerServiceState = {
     initialized: false,
     pollingTimer: null,
     pollingIntervalMs: 5000,
+    pollingInFlight: false,
     accounts: [],
     selectedCookieId: '',
     selectedChatId: '',
@@ -16392,11 +16429,99 @@ const customerServiceState = {
     slashMatches: [],
     slashActiveIndex: 0,
     slashContext: null,
-    documentClickBound: false
+    documentClickBound: false,
+    notificationStateInitialized: false,
+    lastInboundMessageTimeByConversation: {},
+    lastNotificationSoundAt: 0,
+    notificationAudioContext: null
 };
 
 function getCustomerServiceConversationKey(cookieId, chatId) {
     return `${encodeURIComponent(String(cookieId || ''))}::${encodeURIComponent(String(chatId || ''))}`;
+}
+
+function isCustomerServiceSectionActive() {
+    const section = document.getElementById('customer-service-section');
+    return !!section && section.classList.contains('active');
+}
+
+function playCustomerServiceNotificationSound() {
+    const now = Date.now();
+    if (now - customerServiceState.lastNotificationSoundAt < 1000) {
+        return;
+    }
+    customerServiceState.lastNotificationSoundAt = now;
+
+    try {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextClass) return;
+
+        if (!customerServiceState.notificationAudioContext) {
+            customerServiceState.notificationAudioContext = new AudioContextClass();
+        }
+
+        const ctx = customerServiceState.notificationAudioContext;
+        if (ctx.state === 'suspended') {
+            ctx.resume().catch(() => {});
+        }
+
+        const oscillator = ctx.createOscillator();
+        const gainNode = ctx.createGain();
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(980, ctx.currentTime);
+        gainNode.gain.setValueAtTime(0.0001, ctx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.1, ctx.currentTime + 0.01);
+        gainNode.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.16);
+        oscillator.connect(gainNode);
+        gainNode.connect(ctx.destination);
+        oscillator.start();
+        oscillator.stop(ctx.currentTime + 0.17);
+    } catch (error) {
+        console.warn('播放客服台来消息提示音失败:', error);
+    }
+}
+
+function syncCustomerServiceNotificationState() {
+    const currentConversationKeys = new Set();
+    let hasNewInbound = false;
+
+    for (const account of customerServiceState.accounts || []) {
+        const accountId = String(account?.id || '').trim();
+        if (!accountId) continue;
+        for (const conv of account?.conversations || []) {
+            const chatId = String(conv?.chat_id || '').trim();
+            if (!chatId) continue;
+
+            const key = getCustomerServiceConversationKey(accountId, chatId);
+            currentConversationKeys.add(key);
+
+            const lastMessageTime = Number(conv?.last_message_time || 0);
+            const lastDirection = String(conv?.last_message_direction || '').toLowerCase();
+            const inboundMessageTime = lastDirection === 'in' ? lastMessageTime : 0;
+            const previousInboundMessageTime = Number(customerServiceState.lastInboundMessageTimeByConversation[key] || 0);
+
+            if (inboundMessageTime > previousInboundMessageTime) {
+                if (customerServiceState.notificationStateInitialized) {
+                    hasNewInbound = true;
+                }
+                customerServiceState.lastInboundMessageTimeByConversation[key] = inboundMessageTime;
+            } else if (!(key in customerServiceState.lastInboundMessageTimeByConversation)) {
+                customerServiceState.lastInboundMessageTimeByConversation[key] = inboundMessageTime;
+            }
+        }
+    }
+
+    for (const key of Object.keys(customerServiceState.lastInboundMessageTimeByConversation)) {
+        if (!currentConversationKeys.has(key)) {
+            delete customerServiceState.lastInboundMessageTimeByConversation[key];
+        }
+    }
+
+    if (hasNewInbound) {
+        playCustomerServiceNotificationSound();
+    }
+
+    customerServiceState.notificationStateInitialized = true;
 }
 
 function isCustomerServiceConversationStarred(cookieId, chatId) {
@@ -17078,12 +17203,17 @@ async function loadCustomerService() {
     renderCustomerServiceQuickReplies();
     hideCustomerServiceSlashMenu();
     applyCustomerServiceMobileLayout();
-    await refreshCustomerServiceData({ silent: true, preserveSelection: true });
+    await refreshCustomerServiceData({ silent: true, preserveSelection: true, includeDetails: true, renderView: true });
     startCustomerServicePolling();
 }
 
 async function refreshCustomerServiceData(options = {}) {
-    const { silent = false, preserveSelection = true } = options;
+    const {
+        silent = false,
+        preserveSelection = true,
+        includeDetails = true,
+        renderView = true
+    } = options;
     try {
         const response = await fetch(`${apiBase}/api/customer-service/conversations`, {
             headers: { 'Authorization': `Bearer ${authToken}` }
@@ -17118,19 +17248,25 @@ async function refreshCustomerServiceData(options = {}) {
             }
         }
 
-        renderCustomerServiceConversationList();
-        renderCustomerServiceConversationHeader();
+        syncCustomerServiceNotificationState();
 
-        if (customerServiceState.selectedCookieId && customerServiceState.selectedChatId) {
+        if (renderView) {
+            renderCustomerServiceConversationList();
+            renderCustomerServiceConversationHeader();
+        }
+
+        if (includeDetails && customerServiceState.selectedCookieId && customerServiceState.selectedChatId) {
             await Promise.all([
                 loadCustomerServiceMessages({ silent }),
                 loadCustomerServiceOrderInfo()
             ]);
-        } else {
+        } else if (renderView) {
             renderCustomerServiceMessages([]);
             renderCustomerServiceOrderInfo(null);
         }
-        applyCustomerServiceMobileLayout();
+        if (renderView) {
+            applyCustomerServiceMobileLayout();
+        }
     } catch (error) {
         console.error('刷新客服台数据失败:', error);
         if (!silent) showToast('刷新客服台数据失败', 'danger');
@@ -17748,12 +17884,24 @@ function renderCustomerServiceOrderInfo(order) {
 }
 
 function startCustomerServicePolling() {
-    stopCustomerServicePolling();
+    if (customerServiceState.pollingTimer) {
+        return;
+    }
     customerServiceState.pollingTimer = setInterval(async () => {
-        const section = document.getElementById('customer-service-section');
-        if (!section || !section.classList.contains('active')) return;
+        if (customerServiceState.pollingInFlight) return;
         if (customerServiceState.isSending) return;
-        await refreshCustomerServiceData({ silent: true, preserveSelection: true });
+        customerServiceState.pollingInFlight = true;
+        const sectionActive = isCustomerServiceSectionActive();
+        try {
+            await refreshCustomerServiceData({
+                silent: true,
+                preserveSelection: true,
+                includeDetails: sectionActive,
+                renderView: sectionActive
+            });
+        } finally {
+            customerServiceState.pollingInFlight = false;
+        }
     }, customerServiceState.pollingIntervalMs);
 }
 
@@ -17762,6 +17910,7 @@ function stopCustomerServicePolling() {
         clearInterval(customerServiceState.pollingTimer);
         customerServiceState.pollingTimer = null;
     }
+    customerServiceState.pollingInFlight = false;
     hideCustomerServiceSlashMenu();
     closeCustomerServiceOrderDrawer();
 }

@@ -114,6 +114,12 @@ input:checked + .status-slider:before {
   overflow: hidden;
 }
 
+.qr-login-btn small.opacity-75 {
+  color: rgba(255, 255, 255, 0.92);
+  opacity: 0.92 !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
+}
+
 .qr-login-btn:hover {
   transform: translateY(-2px);
   box-shadow: 0 6px 20px rgba(40, 167, 69, 0.4);
@@ -240,6 +246,12 @@ input:checked + .status-slider:before {
 [data-theme="dark"] .qr-loading-tip .text-warning,
 [data-theme="dark"] .qr-loading-tip small {
   color: #fcd34d !important;
+}
+
+[data-theme="dark"] .qr-login-btn small.opacity-75 {
+  color: #ecfdf5;
+  opacity: 1 !important;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
 }
 
 [data-theme="dark"] #qrCodeLoginModal .step-item small {

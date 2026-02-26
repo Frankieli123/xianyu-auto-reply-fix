@@ -12,6 +12,32 @@
   </style>
   <script>
     (function() {
+      function adjustBrightness(hex, percent) {
+        var num = parseInt(hex.replace('#', ''), 16);
+        var amt = Math.round(2.55 * percent);
+        var r = (num >> 16) + amt;
+        var g = ((num >> 8) & 0x00ff) + amt;
+        var b = (num & 0x0000ff) + amt;
+        return (
+          '#' +
+          (
+            0x1000000 +
+            (r < 255 ? (r < 1 ? 0 : r) : 255) * 0x10000 +
+            (g < 255 ? (g < 1 ? 0 : g) : 255) * 0x100 +
+            (b < 255 ? (b < 1 ? 0 : b) : 255)
+          )
+            .toString(16)
+            .slice(1)
+        );
+      }
+
+      var cachedThemeColor = localStorage.getItem('themeColor');
+      if (/^#[0-9A-Fa-f]{6}$/.test(cachedThemeColor)) {
+        document.documentElement.style.setProperty('--primary-color', cachedThemeColor);
+        document.documentElement.style.setProperty('--primary-hover', adjustBrightness(cachedThemeColor, -20));
+        document.documentElement.style.setProperty('--primary-light', adjustBrightness(cachedThemeColor, 40));
+      }
+
       var savedMode = localStorage.getItem('darkMode');
       if (savedMode === 'dark') {
         document.documentElement.setAttribute('data-theme', 'dark');
@@ -44,7 +70,7 @@
     </div>
     <nav class="sidebar-nav">
       <div class="nav-item" data-menu-id="dashboard">
-        <a href="#" class="nav-link active" onclick="showSection('dashboard')">
+        <a href="javascript:void(0)" class="nav-link active" onclick="showSection('dashboard')">
           <i class="bi bi-speedometer2"></i>
           <span>仪表盘</span>
         </a>

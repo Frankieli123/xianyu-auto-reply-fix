@@ -39,6 +39,11 @@
   color: var(--primary-color);
 }
 
+[data-theme="dark"] .stat-icon.primary {
+  background: rgba(99, 102, 241, 0.28);
+  color: #c7d2fe;
+}
+
 .stat-icon.success {
   background: rgba(16, 185, 129, 0.1);
   color: var(--success-color);

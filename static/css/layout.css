@@ -148,7 +148,7 @@
 .main-content {
   margin-left: 250px;
   min-height: 100vh;
-  background: #f8fafc;
+  background: var(--bg-color);
   transition: margin-left 0.3s ease;
 }
 
