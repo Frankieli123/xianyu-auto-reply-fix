@@ -23,9 +23,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV TZ=Asia/Shanghai
 ENV DOCKER_ENV=true
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-ENV PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
-ENV PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
-ENV PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=120000
+ENV PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=180000
 
 #更换中科大源
 RUN sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list.d/debian.sources
@@ -93,8 +91,30 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple&& \
     pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-# 安装Playwright浏览器（放在复制项目代码前，避免代码变更触发重复下载）
-RUN playwright install chromium && \
+# 安装Playwright浏览器（多源回退，避免单镜像源故障）
+RUN set -eux; \
+    hosts="\
+https://cdn.npmmirror.com/binaries/chrome-for-testing \
+https://registry.npmmirror.com/-/binary/chrome-for-testing \
+https://npmmirror.com/mirrors/chrome-for-testing \
+https://cdn.playwright.dev/chrome-for-testing-public \
+https://storage.googleapis.com/chrome-for-testing-public"; \
+    installed=0; \
+    for host in $hosts; do \
+        echo "Trying Playwright Chromium host: $host"; \
+        for i in 1 2; do \
+            if PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST="$host" playwright install chromium; then \
+                installed=1; \
+                break 2; \
+            fi; \
+            echo "Host failed ($host), retry ${i}/2"; \
+            sleep $((i * 15)); \
+        done; \
+    done; \
+    if [ "$installed" -ne 1 ]; then \
+        echo "All Chromium download hosts failed"; \
+        exit 1; \
+    fi; \
     playwright install-deps chromium
 
 # 复制项目文件
