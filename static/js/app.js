@@ -461,6 +461,7 @@ async function loadDashboard() {
 function setDashboardEmptyState() {
     renderDashboardSummary({
         total_revenue: 0,
+        total_profit: 0,
         total_orders: 0,
         account_count: 0,
         inventory_card_count: 0
@@ -474,7 +475,7 @@ function setDashboardEmptyState() {
 function renderDashboardSummary(summary) {
     setTextById('dashboardTotalRevenue', formatDashboardMoney(summary.total_revenue || 0));
     setTextById('dashboardTotalOrders', formatDashboardCount(summary.total_orders || 0));
-    setTextById('dashboardTotalAccounts', formatDashboardCount(summary.account_count || 0));
+    setTextById('dashboardTotalProfit', formatDashboardMoney(summary.total_profit || 0));
     setTextById('dashboardInventoryCards', formatDashboardCount(summary.inventory_card_count || 0));
 }
 
