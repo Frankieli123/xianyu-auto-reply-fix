@@ -3440,57 +3440,84 @@ class XianyuLive:
             # 创建页面
             page = await context.new_page()
 
-            # 构造移动版商品详情页面URL
-            item_url = f"https://h5.m.goofish.com/item?id={item_id}"
-            logger.info(f"访问移动版商品页面: {item_url}")
-
-            # 访问页面
-            await page.goto(item_url, wait_until='networkidle', timeout=30000)
-
-            # 等待页面完全加载
-            await asyncio.sleep(2)
-
-            # 获取商品详情内容
-            detail_text = ""
-            try:
-                # 移动版页面选择器列表（按优先级排序）
-                selectors = [
-                    '.detailDesc--descText--1FMDTCm',  # 移动版商品详情主选择器
-                    'span.rax-text-v2.detailDesc--descText--1FMDTCm',  # 完整选择器
-                    '[class*="detailDesc--descText"]',  # 匹配包含detailDesc--descText的类名
-                    '[class*="descText"]',  # 匹配包含descText的类名
-                    '.desc--GaIUKUQY',  # PC版选择器（备用）
-                    '.detail-desc',     # 常见的详情选择器
-                    '.item-desc',       # 商品描述
-                    '[class*="desc"]',  # 包含desc的类名
-                ]
-                
+            async def _extract_detail_with_selectors(selectors, source_name):
                 for selector in selectors:
                     try:
-                        # 尝试等待元素出现（短超时）
                         await page.wait_for_selector(selector, timeout=3000)
                         detail_element = await page.query_selector(selector)
                         if detail_element:
                             detail_text = await detail_element.inner_text()
                             if detail_text and len(detail_text.strip()) > 0:
-                                logger.info(f"成功获取商品详情（选择器: {selector}）: {item_id}, 长度: {len(detail_text)}")
-                                return detail_text.strip()
+                                detail_text = detail_text.strip()
+                                logger.info(
+                                    f"成功获取商品详情（{source_name}，选择器: {selector}）: {item_id}, 长度: {len(detail_text)}"
+                                )
+                                return detail_text
                     except Exception as e:
-                        logger.debug(f"选择器 {selector} 未找到: {self._safe_str(e)}")
-                        continue
-                
-                # 如果所有选择器都失败，尝试获取整个页面的文本内容
-                logger.warning(f"未找到特定详情元素，尝试获取整个页面内容: {item_id}")
-                body_text = await page.inner_text('body')
-                if body_text:
-                    logger.info(f"获取到页面整体内容: {item_id}, 长度: {len(body_text)}")
-                    return body_text.strip()
-                else:
-                    logger.warning(f"未找到商品详情元素: {item_id}")
+                        logger.debug(f"{source_name} 选择器 {selector} 未找到: {self._safe_str(e)}")
+                return ""
 
-            except Exception as e:
-                logger.warning(f"获取商品详情元素失败: {item_id}, 错误: {self._safe_str(e)}")
+            url_attempts = [
+                {
+                    'name': '移动版',
+                    'url': f"https://h5.m.goofish.com/item?id={item_id}",
+                    'selectors': [
+                        '.detailDesc--descText--1FMDTCm',
+                        'span.rax-text-v2.detailDesc--descText--1FMDTCm',
+                        '[class*="detailDesc--descText"]',
+                        '[class*="descText"]',
+                        '.detail-desc',
+                        '.item-desc',
+                        '[class*="desc"]',
+                    ],
+                },
+                {
+                    'name': '网页版回退',
+                    'url': f"https://www.goofish.com/item?id={item_id}",
+                    'selectors': [
+                        '.desc--GaIUKUQY',
+                        '.detail-desc',
+                        '.item-desc',
+                        '[class*="desc--"]',
+                        '[class*="desc"]',
+                        '[class*="detail"] p',
+                    ],
+                },
+            ]
 
+            body_text_fallback = ""
+            for attempt in url_attempts:
+                attempt_name = attempt['name']
+                attempt_url = attempt['url']
+                logger.info(f"访问{attempt_name}商品页面: {attempt_url}")
+
+                try:
+                    await page.goto(attempt_url, wait_until='networkidle', timeout=30000)
+                except Exception as e:
+                    logger.warning(f"{attempt_name} 页面访问失败: {item_id}, 错误: {self._safe_str(e)}")
+                    continue
+
+                await asyncio.sleep(2)
+
+                detail_text = await _extract_detail_with_selectors(attempt['selectors'], attempt_name)
+                if detail_text:
+                    return detail_text
+
+                try:
+                    body_text = await page.inner_text('body')
+                    if body_text and len(body_text.strip()) > 0:
+                        body_text_fallback = body_text.strip()
+                        logger.warning(
+                            f"{attempt_name} 未命中详情选择器，已记录页面文本兜底: {item_id}, 长度: {len(body_text_fallback)}"
+                        )
+                except Exception as e:
+                    logger.warning(f"{attempt_name} 获取页面文本失败: {item_id}, 错误: {self._safe_str(e)}")
+
+            if body_text_fallback:
+                logger.warning(f"详情选择器全部失败，使用页面文本兜底: {item_id}")
+                return body_text_fallback
+
+            logger.warning(f"移动版和网页版均未获取到商品详情: {item_id}")
             return ""
 
         except Exception as e:
