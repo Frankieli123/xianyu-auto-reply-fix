@@ -96,6 +96,15 @@ def _build_customer_service_send_message_preview(message_type: str, message: str
     return text[:200]
 
 
+def _normalize_order_trade_side(value: Any) -> str:
+    side = str(value or '').strip().lower()
+    return side if side in ('sell', 'buy') else 'unknown'
+
+
+def _is_sell_order(order: Dict[str, Any]) -> bool:
+    return _normalize_order_trade_side(order.get('trade_side')) == 'sell'
+
+
 def cleanup_login_trackers():
     """清理过期的登录追踪记录"""
     current_time = time.time()
@@ -2519,8 +2528,21 @@ async def _execute_password_login(session_id: str, account_id: str, account: str
                                     # 尝试从数据库获取通知配置
                                     notifications = db_manager.get_account_notifications(account_id)
                                     if notifications:
-                                        log_with_user('info', f"找到 {len(notifications)} 个通知配置，但需要账号实例才能发送", current_user)
-                                        log_with_user('warning', f"账号实例不存在，无法发送通知: {account_id}。请确保账号已登录并运行中。", current_user)
+                                        log_with_user('info', f"找到 {len(notifications)} 个通知配置，使用兜底通道发送通知", current_user)
+                                        try:
+                                            from utils.slider_patch import send_notification
+                                            sent = send_notification(
+                                                account_id,
+                                                "⚠️ 账号需要验证",
+                                                message,
+                                                "warning"
+                                            )
+                                            if sent:
+                                                log_with_user('info', f"✅ 已通过兜底通道发送人脸验证通知: {account_id}", current_user)
+                                            else:
+                                                log_with_user('warning', f"兜底通道发送失败或无可用渠道: {account_id}", current_user)
+                                        except Exception as fallback_err:
+                                            log_with_user('error', f"兜底发送人脸验证通知失败: {str(fallback_err)}", current_user)
                                     else:
                                         log_with_user('warning', f"账号 {account_id} 未配置通知渠道", current_user)
                                 except Exception as db_err:
@@ -2581,8 +2603,21 @@ async def _execute_password_login(session_id: str, account_id: str, account: str
                                     # 尝试从数据库获取通知配置
                                     notifications = db_manager.get_account_notifications(account_id)
                                     if notifications:
-                                        log_with_user('info', f"找到 {len(notifications)} 个通知配置，但需要账号实例才能发送", current_user)
-                                        log_with_user('warning', f"账号实例不存在，无法发送通知: {account_id}。请确保账号已登录并运行中。", current_user)
+                                        log_with_user('info', f"找到 {len(notifications)} 个通知配置，使用兜底通道发送通知", current_user)
+                                        try:
+                                            from utils.slider_patch import send_notification
+                                            sent = send_notification(
+                                                account_id,
+                                                "⚠️ 账号需要验证",
+                                                message,
+                                                "warning"
+                                            )
+                                            if sent:
+                                                log_with_user('info', f"✅ 已通过兜底通道发送人脸验证通知: {account_id}", current_user)
+                                            else:
+                                                log_with_user('warning', f"兜底通道发送失败或无可用渠道: {account_id}", current_user)
+                                        except Exception as fallback_err:
+                                            log_with_user('error', f"兜底发送人脸验证通知失败: {str(fallback_err)}", current_user)
                                     else:
                                         log_with_user('warning', f"账号 {account_id} 未配置通知渠道", current_user)
                                 except Exception as db_err:
@@ -8041,7 +8076,9 @@ def get_dashboard_sales(
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """获取销售仪表盘统计数据"""
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
+
+    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
 
     def parse_datetime(value: Any) -> Optional[datetime]:
         if not value:
@@ -8050,15 +8087,23 @@ def get_dashboard_sales(
         if not text:
             return None
         text = text.replace('T', ' ')
+        parsed_dt = None
         try:
-            return datetime.fromisoformat(text)
+            parsed_dt = datetime.fromisoformat(text)
         except Exception:
             for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d'):
                 try:
-                    return datetime.strptime(text, fmt)
+                    parsed_dt = datetime.strptime(text, fmt)
+                    break
                 except Exception:
                     continue
-        return None
+        if parsed_dt is None:
+            return None
+
+        # orders.created_at 在 SQLite 中通常按 UTC 落库，统计筛选按本地时区口径计算。
+        if parsed_dt.tzinfo is None:
+            parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
+        return parsed_dt.astimezone(local_tz).replace(tzinfo=None)
 
     def parse_amount(value: Any) -> float:
         if value is None:
@@ -8082,6 +8127,15 @@ def get_dashboard_sales(
             return quantity if quantity > 0 else 1
         except Exception:
             return 1
+
+    def normalize_order_status(value: Any) -> str:
+        normalized = str(value or '').strip().lower()
+        alias = {
+            'pending_ship': 'pending_delivery',
+            'completed': 'success',
+            'cancelled': 'closed'
+        }
+        return alias.get(normalized, normalized)
 
     try:
         user_id = current_user['user_id']
@@ -8123,22 +8177,28 @@ def get_dashboard_sales(
 
         all_orders = []
         for cookie_id in cookie_ids:
-            orders = db_manager.get_orders_by_cookie(cookie_id, limit=5000)
+            orders = db_manager.get_orders_by_cookie(cookie_id, limit=None)
             for order in orders:
                 order['cookie_id'] = cookie_id
                 all_orders.append(order)
 
-        excluded_status = {'closed', 'refunded', 'pending_payment'}
+        excluded_status = {'closed', 'refunded', 'pending_payment', 'processing', 'unknown', ''}
         filtered_orders = []
         trend_orders = []
+        excluded_non_sell_count = 0
         for order in all_orders:
-            order_status = (order.get('order_status') or '').strip().lower()
+            if not _is_sell_order(order):
+                excluded_non_sell_count += 1
+                continue
+
+            order_status = normalize_order_status(order.get('order_status'))
             if order_status in excluded_status:
                 continue
 
             created_dt = parse_datetime(order.get('created_at'))
             if created_dt is None:
                 continue
+            order['_normalized_status'] = order_status
             order['_created_dt'] = created_dt
             order['_amount'] = parse_amount(order.get('amount'))
             order['_quantity'] = parse_quantity(order.get('quantity'))
@@ -8147,6 +8207,11 @@ def get_dashboard_sales(
                 filtered_orders.append(order)
             if trend_start_dt <= created_dt < trend_end_dt:
                 trend_orders.append(order)
+
+        if excluded_non_sell_count > 0:
+            logger.info(
+                f"销售统计已过滤非卖出订单: user_id={user_id}, count={excluded_non_sell_count}"
+            )
 
         all_cards = db_manager.get_all_cards(user_id)
         card_cost_map = {card.get('id'): float(card.get('cost_price') or 0) for card in all_cards}
@@ -8419,10 +8484,15 @@ def get_user_orders(current_user: Dict[str, Any] = Depends(get_current_user)):
 
         # 获取所有订单数据
         all_orders = []
+        excluded_non_sell_count = 0
         nick_cache: Dict[str, str] = {}
         for cookie_id in user_cookies.keys():
             orders = db_manager.get_orders_by_cookie(cookie_id, limit=1000)  # 增加限制数量
             for order in orders:
+                if not _is_sell_order(order):
+                    excluded_non_sell_count += 1
+                    continue
+
                 buyer_nick = str(order.get('buyer_nick') or '').strip()
                 buyer_id = str(order.get('buyer_id') or '').strip()
                 if not buyer_nick and buyer_id:
@@ -8437,6 +8507,9 @@ def get_user_orders(current_user: Dict[str, Any] = Depends(get_current_user)):
 
         # 按创建时间倒序排列
         all_orders.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+
+        if excluded_non_sell_count > 0:
+            log_with_user('info', f"订单列表已过滤非卖出订单 {excluded_non_sell_count} 条", current_user)
 
         log_with_user('info', f"用户订单查询成功，共 {len(all_orders)} 条记录", current_user)
         return {"success": True, "data": all_orders}

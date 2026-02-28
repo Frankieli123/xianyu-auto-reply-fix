@@ -256,9 +256,28 @@ def send_notification(user_id: str, title: str, message: str, notification_type:
 
                     elif channel_type == 'webhook':
                         # 自定义Webhook通知
-                        webhook_url = config_data.get('url', '')
+                        webhook_url = (
+                            config_data.get('webhook_url')
+                            or config_data.get('url')
+                            or config_data.get('config', '')
+                        )
+                        http_method = str(config_data.get('http_method', 'POST')).upper()
+                        if http_method not in ('POST', 'PUT'):
+                            http_method = 'POST'
                         if webhook_url:
                             try:
+                                headers = {'Content-Type': 'application/json'}
+                                raw_headers = config_data.get('headers')
+                                if isinstance(raw_headers, str) and raw_headers.strip():
+                                    try:
+                                        parsed_headers = json.loads(raw_headers)
+                                        if isinstance(parsed_headers, dict):
+                                            headers.update(parsed_headers)
+                                    except Exception:
+                                        pass
+                                elif isinstance(raw_headers, dict):
+                                    headers.update(raw_headers)
+
                                 payload = {
                                     "title": title,
                                     "message": message,
@@ -267,8 +286,8 @@ def send_notification(user_id: str, title: str, message: str, notification_type:
                                     "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
                                 }
                                 async with aiohttp.ClientSession() as session:
-                                    async with session.post(webhook_url, json=payload, timeout=10) as resp:
-                                        if resp.status == 200:
+                                    async with session.request(http_method, webhook_url, json=payload, headers=headers, timeout=10) as resp:
+                                        if 200 <= resp.status < 300:
                                             logger.info(f"【{user_id}】Webhook通知发送成功 ({channel_name})")
                                             notification_sent = True
                                         else:
@@ -2431,4 +2450,3 @@ if __name__ != "__main__":
         apply_patches()
     except:
         pass  # 如果导入失败，忽略错误
-

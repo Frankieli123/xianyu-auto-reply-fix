@@ -1286,6 +1286,127 @@ class XianyuLive:
             logger.error(f"【{self.cookie_id}】提取评价订单ID失败: {self._safe_str(e)}")
             return None
 
+    def _normalize_trade_side(self, trade_side: str) -> str:
+        side = str(trade_side or '').strip().lower()
+        return side if side in ('sell', 'buy') else 'unknown'
+
+    def _infer_trade_side_from_update_key(self, update_key: str) -> str:
+        text = str(update_key or '').strip()
+        if not text:
+            return 'unknown'
+        parts = [part.strip().upper() for part in text.split(':') if str(part).strip()]
+        for part in reversed(parts):
+            if part == 'SELLER' or part.endswith('_SELLER'):
+                return 'sell'
+            if part == 'BUYER' or part.endswith('_BUYER'):
+                return 'buy'
+        return 'unknown'
+
+    def _infer_trade_side_from_task_name(self, task_name: str) -> str:
+        text = str(task_name or '').strip()
+        if not text:
+            return 'unknown'
+        if re.search(r'[_-]卖家(?:$|[-_])', text) or text.endswith('卖家'):
+            return 'sell'
+        if re.search(r'[_-]买家(?:$|[-_])', text) or text.endswith('买家'):
+            return 'buy'
+        return 'unknown'
+
+    def _infer_trade_side_from_url_text(self, url_text: str) -> str:
+        text = str(url_text or '').lower()
+        if not text:
+            return 'unknown'
+        has_seller = 'role=seller' in text
+        has_buyer = 'role=buyer' in text
+        if has_seller and not has_buyer:
+            return 'sell'
+        if has_buyer and not has_seller:
+            return 'buy'
+        return 'unknown'
+
+    def _extract_trade_side(self, message: dict, raw_message_data: dict = None) -> str:
+        """从系统消息中提取订单交易方向（sell/buy/unknown）"""
+        try:
+            message_1 = message.get('1') if isinstance(message, dict) else None
+
+            def _parse_side_from_message_10(message_10: dict) -> str:
+                if not isinstance(message_10, dict):
+                    return 'unknown'
+
+                side = self._infer_trade_side_from_url_text(message_10.get('reminderUrl', ''))
+                if side != 'unknown':
+                    return side
+
+                ext_json_str = message_10.get('extJson', '')
+                if ext_json_str:
+                    try:
+                        ext_json = json.loads(ext_json_str)
+                        side = self._infer_trade_side_from_update_key(ext_json.get('updateKey', ''))
+                    except Exception:
+                        side = self._infer_trade_side_from_update_key(ext_json_str)
+                    if side != 'unknown':
+                        return side
+
+                biz_tag_str = message_10.get('bizTag', '')
+                if biz_tag_str:
+                    try:
+                        biz_tag = json.loads(biz_tag_str)
+                        task_name = biz_tag.get('taskName', '')
+                    except Exception:
+                        task_name = biz_tag_str
+                    side = self._infer_trade_side_from_task_name(task_name)
+                    if side != 'unknown':
+                        return side
+
+                return 'unknown'
+
+            if isinstance(message_1, dict):
+                message_10 = message_1.get('10')
+                side = _parse_side_from_message_10(message_10)
+                if side != 'unknown':
+                    return side
+
+                # 解析卡片JSON中的targetUrl角色
+                try:
+                    content_json_str = message_1.get('6', {}).get('3', {}).get('5', '')
+                    if content_json_str:
+                        side = self._infer_trade_side_from_url_text(content_json_str)
+                        if side != 'unknown':
+                            return side
+                except Exception:
+                    pass
+
+            # 解析动态更新消息中的字段（message['4']）
+            message_4 = message.get('4') if isinstance(message, dict) else None
+            if isinstance(message_4, dict):
+                side = _parse_side_from_message_10(message_4)
+                if side != 'unknown':
+                    return side
+                for value in message_4.values():
+                    if isinstance(value, str):
+                        side = self._infer_trade_side_from_url_text(value)
+                        if side != 'unknown':
+                            return side
+
+            if raw_message_data:
+                raw_text = json.dumps(raw_message_data, ensure_ascii=False) if isinstance(raw_message_data, dict) else str(raw_message_data)
+                side = self._infer_trade_side_from_url_text(raw_text)
+                if side != 'unknown':
+                    return side
+
+                raw_upper = raw_text.upper()
+                has_seller = '_SELLER' in raw_upper
+                has_buyer = '_BUYER' in raw_upper
+                if has_seller and not has_buyer:
+                    return 'sell'
+                if has_buyer and not has_seller:
+                    return 'buy'
+
+            return 'unknown'
+        except Exception as e:
+            logger.warning(f"【{self.cookie_id}】提取交易方向失败: {self._safe_str(e)}")
+            return 'unknown'
+
     async def _call_comment_api(self, order_id: str, comment: str) -> dict:
         """调用好评接口"""
         import aiohttp
@@ -1757,7 +1878,14 @@ class XianyuLive:
                 item_title = "待获取商品信息"
                 
                 # 调用自动发货方法获取发货内容
-                delivery_content = await self._auto_delivery(item_id, item_title, order_id, user_id, chat_id)
+                delivery_content = await self._auto_delivery(
+                    item_id,
+                    item_title,
+                    order_id,
+                    user_id,
+                    chat_id,
+                    trade_side='sell'
+                )
                 
                 if delivery_content:
                     # 标记已发货
@@ -1844,6 +1972,7 @@ class XianyuLive:
 
             # 提取订单ID（传递原始消息数据以便在解密消息中找不到时进行备用搜索）
             order_id = self._extract_order_id(message, message_data)
+            trade_side = self._extract_trade_side(message, message_data)
 
             # 如果order_id不存在，直接返回
             if not order_id:
@@ -1907,7 +2036,9 @@ class XianyuLive:
                         logger.info(f"商品 {item_id} 开启了多数量发货，获取订单详情...")
                         try:
                             # 使用现有方法获取订单详情
-                            order_detail = await self.fetch_order_detail_info(order_id, item_id, send_user_id)
+                            order_detail = await self.fetch_order_detail_info(
+                                order_id, item_id, send_user_id, trade_side=trade_side
+                            )
                             if order_detail and order_detail.get('quantity'):
                                 try:
                                     order_quantity = int(order_detail['quantity'])
@@ -1934,7 +2065,9 @@ class XianyuLive:
                     for i in range(quantity_to_send):
                         try:
                             # 每次调用都可能获取不同的内容（API卡券、批量数据等）
-                            delivery_content = await self._auto_delivery(item_id, item_title, order_id, send_user_id, chat_id, send_user_name)
+                            delivery_content = await self._auto_delivery(
+                                item_id, item_title, order_id, send_user_id, chat_id, send_user_name, trade_side=trade_side
+                            )
                             if delivery_content:
                                 delivery_contents.append(delivery_content)
                                 success_count += 1
@@ -5438,7 +5571,7 @@ Cookie数量: {cookie_count}
             logger.error(f"【{self.cookie_id}】免拼发货模块调用失败: {self._safe_str(e)}")
             return {"error": f"免拼发货模块调用失败: {self._safe_str(e)}", "order_id": order_id}
 
-    async def fetch_order_detail_info(self, order_id: str, item_id: str = None, buyer_id: str = None, debug_headless: bool = None, sid: str = None, force_refresh: bool = False, buyer_nick: str = None):
+    async def fetch_order_detail_info(self, order_id: str, item_id: str = None, buyer_id: str = None, debug_headless: bool = None, sid: str = None, force_refresh: bool = False, buyer_nick: str = None, trade_side: str = None):
         """获取订单详情信息（使用独立的锁机制，不受延迟锁影响）
 
         Args:
@@ -5449,6 +5582,7 @@ Cookie数量: {cookie_count}
             sid: 会话ID（如 56226853668@goofish），用于简化消息匹配订单
             force_refresh: 是否强制刷新（跳过缓存直接从闲鱼获取）
             buyer_nick: 买家昵称（从下单消息中提取）
+            trade_side: 交易方向（sell/buy/unknown）
         """
         # 使用独立的订单详情锁，不与自动发货锁冲突
         order_detail_lock = self._order_detail_locks[order_id]
@@ -5534,6 +5668,7 @@ Cookie数量: {cookie_count}
                                 quantity=quantity,
                                 amount=amount,
                                 cookie_id=self.cookie_id,
+                                trade_side=self._normalize_trade_side(trade_side),
                                 order_status=order_status if order_status else None  # 传递从闲鱼获取的订单状态
                             )
                             
@@ -5578,7 +5713,7 @@ Cookie数量: {cookie_count}
                 logger.error(f"【{self.cookie_id}】获取订单详情异常: {self._safe_str(e)}")
                 return None
 
-    async def _auto_delivery(self, item_id: str, item_title: str = None, order_id: str = None, send_user_id: str = None, chat_id: str = None, send_user_name: str = None):
+    async def _auto_delivery(self, item_id: str, item_title: str = None, order_id: str = None, send_user_id: str = None, chat_id: str = None, send_user_name: str = None, trade_side: str = None):
         """自动发货功能 - 获取卡券规则，执行延时，确认发货，发送内容"""
         try:
             from db_manager import db_manager
@@ -5658,7 +5793,7 @@ Cookie数量: {cookie_count}
             if is_multi_spec and order_id:
                 logger.info(f"检测到多规格商品，获取订单规格信息: {order_id}")
                 try:
-                    order_detail = await self.fetch_order_detail_info(order_id, item_id, send_user_id)
+                    order_detail = await self.fetch_order_detail_info(order_id, item_id, send_user_id, trade_side=trade_side)
                     # 确保order_detail是字典类型
                     if order_detail and isinstance(order_detail, dict):
                         spec_name = order_detail.get('spec_name', '')
@@ -5852,7 +5987,8 @@ Cookie数量: {cookie_count}
                                     item_id=item_id,
                                     buyer_id=send_user_id,
                                     buyer_nick=self._normalize_buyer_nick(send_user_name),
-                                    cookie_id=self.cookie_id
+                                    cookie_id=self.cookie_id,
+                                    trade_side=self._normalize_trade_side(trade_side)
                                 )
 
                                 # 使用订单状态处理器设置状态
@@ -6375,7 +6511,9 @@ Cookie数量: {cookie_count}
                     order_info = db_manager.get_order_by_id(order_id)
                     if not order_info:
                         # 如果数据库中没有，尝试通过API获取
-                        order_detail = await self.fetch_order_detail_info(order_id, item_id, buyer_id)
+                        order_detail = await self.fetch_order_detail_info(
+                            order_id, item_id, buyer_id, trade_side='sell'
+                        )
                         if order_detail:
                             order_info = order_detail
                             logger.warning(f"通过API获取到订单信息: {order_id}")
@@ -8913,6 +9051,7 @@ Cookie数量: {cookie_count}
                         temp_item_id = None
                         temp_sid = None
                         temp_buyer_nick = None  # 买家昵称
+                        temp_trade_side = self._extract_trade_side(message, message_data)
 
                         # 提取用户ID和买家昵称
                         try:
@@ -8963,7 +9102,14 @@ Cookie数量: {cookie_count}
                             pass
 
                         # 调用订单详情获取方法（传入sid和buyer_nick用于保存到数据库）
-                        order_detail = await self.fetch_order_detail_info(order_id, temp_item_id, temp_user_id, sid=temp_sid, buyer_nick=temp_buyer_nick)
+                        order_detail = await self.fetch_order_detail_info(
+                            order_id,
+                            temp_item_id,
+                            temp_user_id,
+                            sid=temp_sid,
+                            buyer_nick=temp_buyer_nick,
+                            trade_side=temp_trade_side
+                        )
                         if order_detail:
                             logger.info(f'[{msg_time}] 【{self.cookie_id}】✅ 订单详情获取成功: {order_id}')
                         else:

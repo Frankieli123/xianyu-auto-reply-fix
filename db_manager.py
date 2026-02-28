@@ -265,6 +265,7 @@ class DBManager:
                 spec_value_2 TEXT,
                 quantity TEXT,
                 amount TEXT,
+                trade_side TEXT DEFAULT 'unknown',
                 order_status TEXT DEFAULT 'unknown',
                 cookie_id TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -291,6 +292,14 @@ class DBManager:
                 logger.info("正在为 orders 表添加 buyer_nick 列...")
                 self._execute_sql(cursor, "ALTER TABLE orders ADD COLUMN buyer_nick TEXT")
                 logger.info("orders 表 buyer_nick 列添加完成")
+
+            # 检查并添加 trade_side 列到 orders 表（用于区分买入/卖出订单）
+            try:
+                self._execute_sql(cursor, "SELECT trade_side FROM orders LIMIT 1")
+            except sqlite3.OperationalError:
+                logger.info("正在为 orders 表添加 trade_side 列...")
+                self._execute_sql(cursor, "ALTER TABLE orders ADD COLUMN trade_side TEXT DEFAULT 'unknown'")
+                logger.info("orders 表 trade_side 列添加完成")
 
             # 检查并添加 user_id 列（用于数据库迁移）
             try:
@@ -721,6 +730,8 @@ Cookie数量: {cookie_count}
             self._ensure_item_info_columns(cursor)
             # 兜底确保 delivery_rules 的关键字段存在（与 db_version 无关）
             self._ensure_delivery_rules_columns(cursor)
+            # 回填历史订单交易方向，避免统计误计买入单
+            self._backfill_orders_trade_side(cursor)
 
         except Exception as e:
             logger.error(f"数据库迁移失败: {e}")
@@ -773,6 +784,48 @@ Cookie数量: {cookie_count}
             self._execute_sql(cursor, "CREATE INDEX IF NOT EXISTS idx_delivery_rules_user_item_id ON delivery_rules(user_id, item_id)")
         except Exception as e:
             logger.warning(f"创建 delivery_rules item_id 索引失败: {e}")
+
+    def _backfill_orders_trade_side(self, cursor):
+        """回填历史订单交易方向，只处理未知记录，不覆盖已识别方向。"""
+        try:
+            self._execute_sql(
+                cursor,
+                """
+                UPDATE orders
+                SET trade_side = 'unknown'
+                WHERE trade_side IS NULL
+                   OR TRIM(trade_side) = ''
+                   OR LOWER(TRIM(trade_side)) NOT IN ('sell', 'buy', 'unknown')
+                """
+            )
+            normalized_count = cursor.rowcount or 0
+
+            self._execute_sql(
+                cursor,
+                """
+                UPDATE orders
+                SET trade_side = 'sell', updated_at = CURRENT_TIMESTAMP
+                WHERE (trade_side IS NULL OR TRIM(trade_side) = '' OR LOWER(TRIM(trade_side)) = 'unknown')
+                  AND item_id IS NOT NULL
+                  AND TRIM(item_id) <> ''
+                  AND cookie_id IS NOT NULL
+                  AND TRIM(cookie_id) <> ''
+                  AND EXISTS (
+                      SELECT 1
+                      FROM item_info i
+                      WHERE i.cookie_id = orders.cookie_id
+                        AND i.item_id = orders.item_id
+                  )
+                """
+            )
+            backfilled_sell_count = cursor.rowcount or 0
+
+            if normalized_count > 0 or backfilled_sell_count > 0:
+                logger.info(
+                    f"订单交易方向回填完成: 规范化 {normalized_count} 条, 标记卖出 {backfilled_sell_count} 条"
+                )
+        except Exception as e:
+            logger.warning(f"回填订单交易方向失败: {e}")
 
     def _update_cards_table_constraints(self, cursor):
         """更新cards表的CHECK约束以支持image和yifan_api类型"""
@@ -6564,7 +6617,7 @@ Cookie数量: {cookie_count}
                               spec_name: str = None, spec_value: str = None, quantity: str = None,
                               amount: str = None, order_status: str = None, cookie_id: str = None,
                               sid: str = None, spec_name_2: str = None, spec_value_2: str = None,
-                              buyer_nick: str = None):
+                              buyer_nick: str = None, trade_side: str = None):
         """插入或更新订单信息
 
         Args:
@@ -6579,12 +6632,17 @@ Cookie数量: {cookie_count}
             quantity: 数量
             amount: 金额
             order_status: 订单状态
+            trade_side: 交易方向（sell/buy/unknown）
             cookie_id: Cookie ID
             sid: 会话ID（如 56226853668@goofish 或 56226853668），用于简化消息匹配订单
         """
         with self.lock:
             try:
                 cursor = self.conn.cursor()
+                normalized_trade_side = None
+                if trade_side is not None:
+                    side_text = str(trade_side).strip().lower()
+                    normalized_trade_side = side_text if side_text in ('sell', 'buy', 'unknown') else 'unknown'
 
                 # 检查cookie_id是否在cookies表中存在（如果提供了cookie_id）
                 if cookie_id:
@@ -6636,6 +6694,9 @@ Cookie数量: {cookie_count}
                     if order_status is not None:
                         update_fields.append("order_status = ?")
                         update_values.append(order_status)
+                    if normalized_trade_side is not None:
+                        update_fields.append("trade_side = ?")
+                        update_values.append(normalized_trade_side)
                     if cookie_id is not None:
                         update_fields.append("cookie_id = ?")
                         update_values.append(cookie_id)
@@ -6651,10 +6712,11 @@ Cookie数量: {cookie_count}
                     # 插入新订单
                     cursor.execute('''
                     INSERT INTO orders (order_id, item_id, buyer_id, buyer_nick, sid, spec_name, spec_value,
-                                      spec_name_2, spec_value_2, quantity, amount, order_status, cookie_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                      spec_name_2, spec_value_2, quantity, amount, trade_side, order_status, cookie_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (order_id, item_id, buyer_id, buyer_nick, sid, spec_name, spec_value,
-                          spec_name_2, spec_value_2, quantity, amount, order_status or 'unknown', cookie_id))
+                          spec_name_2, spec_value_2, quantity, amount, normalized_trade_side or 'unknown',
+                          order_status or 'unknown', cookie_id))
                     logger.info(f"插入新订单: {order_id}")
 
                 self.conn.commit()
@@ -6672,7 +6734,8 @@ Cookie数量: {cookie_count}
                 cursor = self.conn.cursor()
                 cursor.execute('''
                 SELECT order_id, item_id, buyer_id, buyer_nick, sid, spec_name, spec_value,
-                       spec_name_2, spec_value_2, quantity, amount, order_status, cookie_id, created_at, updated_at
+                       spec_name_2, spec_value_2, quantity, amount, order_status, cookie_id, created_at, updated_at,
+                       trade_side
                 FROM orders WHERE order_id = ?
                 ''', (order_id,))
 
@@ -6693,7 +6756,8 @@ Cookie数量: {cookie_count}
                         'order_status': row[11],
                         'cookie_id': row[12],
                         'created_at': row[13],
-                        'updated_at': row[14]
+                        'updated_at': row[14],
+                        'trade_side': row[15] or 'unknown'
                     }
                 return None
 
@@ -6701,17 +6765,30 @@ Cookie数量: {cookie_count}
                 logger.error(f"获取订单信息失败: {order_id} - {e}")
                 return None
 
-    def get_orders_by_cookie(self, cookie_id: str, limit: int = 100):
-        """根据Cookie ID获取订单列表"""
+    def get_orders_by_cookie(self, cookie_id: str, limit: Optional[int] = 100):
+        """根据Cookie ID获取订单列表
+
+        Args:
+            cookie_id: 账号ID
+            limit: 返回条数上限；None或<=0时不限制
+        """
         with self.lock:
             try:
                 cursor = self.conn.cursor()
-                cursor.execute('''
-                SELECT order_id, item_id, buyer_id, buyer_nick, sid, spec_name, spec_value,
-                       spec_name_2, spec_value_2, quantity, amount, order_status, created_at, updated_at
-                FROM orders WHERE cookie_id = ?
-                ORDER BY created_at DESC LIMIT ?
-                ''', (cookie_id, limit))
+                if limit is None or int(limit) <= 0:
+                    cursor.execute('''
+                    SELECT order_id, item_id, buyer_id, buyer_nick, sid, spec_name, spec_value,
+                           spec_name_2, spec_value_2, quantity, amount, order_status, created_at, updated_at, trade_side
+                    FROM orders WHERE cookie_id = ?
+                    ORDER BY created_at DESC
+                    ''', (cookie_id,))
+                else:
+                    cursor.execute('''
+                    SELECT order_id, item_id, buyer_id, buyer_nick, sid, spec_name, spec_value,
+                           spec_name_2, spec_value_2, quantity, amount, order_status, created_at, updated_at, trade_side
+                    FROM orders WHERE cookie_id = ?
+                    ORDER BY created_at DESC LIMIT ?
+                    ''', (cookie_id, int(limit)))
 
                 orders = []
                 for row in cursor.fetchall():
@@ -6729,7 +6806,8 @@ Cookie数量: {cookie_count}
                         'amount': row[10],
                         'order_status': row[11],
                         'created_at': row[12],
-                        'updated_at': row[13]
+                        'updated_at': row[13],
+                        'trade_side': row[14] or 'unknown'
                     })
 
                 return orders
@@ -6820,7 +6898,8 @@ Cookie数量: {cookie_count}
                 
                 cursor.execute(f'''
                 SELECT order_id, item_id, buyer_id, buyer_nick, sid, spec_name, spec_value,
-                       spec_name_2, spec_value_2, quantity, amount, order_status, cookie_id, created_at, updated_at
+                       spec_name_2, spec_value_2, quantity, amount, order_status, cookie_id, created_at, updated_at,
+                       trade_side
                 FROM orders
                 WHERE {where_clause}
                 ORDER BY created_at DESC
@@ -6845,7 +6924,8 @@ Cookie数量: {cookie_count}
                         'order_status': row[11],
                         'cookie_id': row[12],
                         'created_at': row[13],
-                        'updated_at': row[14]
+                        'updated_at': row[14],
+                        'trade_side': row[15] or 'unknown'
                     }
                 
                 logger.warning(f"未找到买家 {buyer_id} 的最近订单 (cookie_id={cookie_id}, status={status}, minutes={minutes})")
@@ -6897,7 +6977,8 @@ Cookie数量: {cookie_count}
                 
                 sql = f'''
                 SELECT order_id, item_id, buyer_id, buyer_nick, sid, spec_name, spec_value,
-                       spec_name_2, spec_value_2, quantity, amount, order_status, cookie_id, created_at, updated_at
+                       spec_name_2, spec_value_2, quantity, amount, order_status, cookie_id, created_at, updated_at,
+                       trade_side
                 FROM orders
                 WHERE {where_clause}
                 ORDER BY created_at DESC
@@ -6935,7 +7016,8 @@ Cookie数量: {cookie_count}
                         'order_status': row[11],
                         'cookie_id': row[12],
                         'created_at': row[13],
-                        'updated_at': row[14]
+                        'updated_at': row[14],
+                        'trade_side': row[15] or 'unknown'
                     }
                 
                 logger.warning(f"未找到sid {sid} 的最近订单 (cookie_id={cookie_id}, status={status}, minutes={minutes})")
