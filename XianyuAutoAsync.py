@@ -849,7 +849,7 @@ class XianyuLive:
         # 消息防抖管理器：用于处理用户连续发送消息的情况
         # {chat_id: {'task': asyncio.Task, 'last_message': dict, 'timer': float}}
         self.message_debounce_tasks = {}  # 存储每个chat_id的防抖任务
-        self.message_debounce_delay = 3  # 防抖延迟时间（秒）：用户停止发送消息1秒后才回复
+        self._message_debounce_delay = 3  # 防抖延迟默认值（秒），实际值通过property从数据库动态读取
         self.message_debounce_lock = asyncio.Lock()  # 防抖任务管理的锁
         
         # 消息去重机制：防止同一条消息被处理多次
@@ -869,6 +869,16 @@ class XianyuLive:
 
         # 注册实例到类级别字典（用于API调用）
         self._register_instance()
+
+    @property
+    def message_debounce_delay(self):
+        """动态从数据库读取防抖延迟配置，修改后无需重启"""
+        try:
+            from db_manager import db_manager
+            val = db_manager.get_system_setting('message_debounce_delay')
+            return int(val) if val else self._message_debounce_delay
+        except Exception:
+            return self._message_debounce_delay
 
     def _init_order_status_handler(self):
         """初始化订单状态处理器"""

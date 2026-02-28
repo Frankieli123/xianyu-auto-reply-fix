@@ -3194,6 +3194,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     initDarkMode();
     // 加载系统版本号
     loadSystemVersion();
+    // 加载防抖延迟设置
+    loadDebounceDelay();
     // 启动验证会话监控
     startCaptchaSessionMonitor();
     // 添加Cookie表单提交
@@ -11583,6 +11585,60 @@ async function loadAPISecuritySettings() {
     } catch (error) {
         console.error('加载API安全设置失败:', error);
         showToast('加载API安全设置失败', 'danger');
+    }
+}
+
+// 加载防抖延迟设置
+async function loadDebounceDelay() {
+    try {
+        const response = await fetch('/system-settings', {
+            headers: {
+                'Authorization': `Bearer ${authToken}`
+            }
+        });
+        if (response.ok) {
+            const settings = await response.json();
+            const val = settings.message_debounce_delay;
+            const input = document.getElementById('debounceDelay');
+            if (input && val) {
+                input.value = parseInt(val) || 3;
+            }
+        }
+    } catch (error) {
+        console.error('加载防抖延迟设置失败:', error);
+    }
+}
+
+// 保存防抖延迟设置
+async function saveDebounceDelay() {
+    const input = document.getElementById('debounceDelay');
+    if (!input) return;
+    const val = parseInt(input.value);
+    if (isNaN(val) || val < 1 || val > 10) {
+        showToast('防抖延迟需在1-10秒之间', 'warning');
+        return;
+    }
+    try {
+        const response = await fetch('/system-settings/message_debounce_delay', {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${authToken}`
+            },
+            body: JSON.stringify({
+                key: 'message_debounce_delay',
+                value: String(val),
+                description: '消息防抖延迟时间（秒）'
+            })
+        });
+        if (response.ok) {
+            showToast('防抖延迟已保存', 'success');
+        } else {
+            showToast('保存防抖延迟失败', 'danger');
+        }
+    } catch (error) {
+        console.error('保存防抖延迟失败:', error);
+        showToast('保存防抖延迟失败', 'danger');
     }
 }
 

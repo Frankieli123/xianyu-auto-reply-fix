@@ -492,18 +492,26 @@
         <div class="card">
           <div class="card-header d-flex justify-content-between align-items-center">
             <span><i class="bi bi-list-ul me-2"></i>账号列表</span>
-            <div class="btn-group">
-              <button class="btn btn-sm btn-outline-success" onclick="openDefaultReplyManager()">
-                <i class="bi bi-chat-text me-1"></i>默认回复管理
-              </button>
-              <button class="btn btn-sm btn-outline-primary" onclick="loadCookies()">
-                <i class="bi bi-arrow-clockwise me-1"></i>刷新
-              </button>
+            <div class="d-flex align-items-center gap-2">
+              <div class="input-group input-group-sm" style="width: auto;">
+                <span class="input-group-text">回复延迟</span>
+                <input type="text" class="form-control text-center" id="debounceDelay" value="3" style="width: 50px;" inputmode="numeric" pattern="[0-9]*">
+                <span class="input-group-text">秒</span>
+                <button class="btn btn-sm btn-outline-primary" onclick="saveDebounceDelay()">保存</button>
+              </div>
+              <div class="btn-group">
+                <button class="btn btn-sm btn-outline-success" onclick="openDefaultReplyManager()">
+                  <i class="bi bi-chat-text me-1"></i>默认回复管理
+                </button>
+                <button class="btn btn-sm btn-outline-primary" onclick="loadCookies()">
+                  <i class="bi bi-arrow-clockwise me-1"></i>刷新
+                </button>
+              </div>
             </div>
           </div>
           <div class="card-body p-0">
             <div class="table-responsive">
-              <table class="table table-hover" id="cookieTable">
+              <table class="table table-hover text-center" id="cookieTable">
                 <thead>
                   <tr>
                     <th style="width: 9%">账号ID</th>
