@@ -5655,6 +5655,7 @@ Cookie数量: {cookie_count}
                         else:
                             # 先保存订单基本信息（包含sid和buyer_nick用于简化消息匹配）
                             safe_buyer_nick = self._normalize_buyer_nick(buyer_nick)
+                            resolved_trade_side = self._normalize_trade_side(trade_side) if trade_side is not None else None
                             success = db_manager.insert_or_update_order(
                                 order_id=order_id,
                                 item_id=item_id,
@@ -5668,7 +5669,7 @@ Cookie数量: {cookie_count}
                                 quantity=quantity,
                                 amount=amount,
                                 cookie_id=self.cookie_id,
-                                trade_side=self._normalize_trade_side(trade_side),
+                                trade_side=resolved_trade_side,
                                 order_status=order_status if order_status else None  # 传递从闲鱼获取的订单状态
                             )
                             
@@ -5982,13 +5983,14 @@ Cookie数量: {cookie_count}
                             existing_order = db_manager.get_order_by_id(order_id)
                             if not existing_order:
                                 # 插入基本订单信息
+                                resolved_trade_side = self._normalize_trade_side(trade_side) if trade_side is not None else None
                                 success = db_manager.insert_or_update_order(
                                     order_id=order_id,
                                     item_id=item_id,
                                     buyer_id=send_user_id,
                                     buyer_nick=self._normalize_buyer_nick(send_user_name),
                                     cookie_id=self.cookie_id,
-                                    trade_side=self._normalize_trade_side(trade_side)
+                                    trade_side=resolved_trade_side
                                 )
 
                                 # 使用订单状态处理器设置状态

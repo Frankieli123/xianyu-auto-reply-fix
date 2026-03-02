@@ -105,6 +105,22 @@ def _is_sell_order(order: Dict[str, Any]) -> bool:
     return _normalize_order_trade_side(order.get('trade_side')) == 'sell'
 
 
+def _resolve_trade_side_for_order_refresh(order: Dict[str, Any]) -> Optional[str]:
+    side = _normalize_order_trade_side(order.get('trade_side'))
+    if side in ('sell', 'buy'):
+        return side
+
+    cookie_id = str(order.get('cookie_id') or '').strip()
+    item_id = str(order.get('item_id') or '').strip()
+    if cookie_id and item_id:
+        try:
+            if db_manager.get_item_info(cookie_id, item_id):
+                return 'sell'
+        except Exception as e:
+            logger.warning(f"刷新订单交易方向推断失败: cookie_id={cookie_id}, item_id={item_id}, error={e}")
+    return None
+
+
 def cleanup_login_trackers():
     """清理过期的登录追踪记录"""
     current_time = time.time()
@@ -8484,13 +8500,13 @@ def get_user_orders(current_user: Dict[str, Any] = Depends(get_current_user)):
 
         # 获取所有订单数据
         all_orders = []
-        excluded_non_sell_count = 0
+        excluded_buy_count = 0
         nick_cache: Dict[str, str] = {}
         for cookie_id in user_cookies.keys():
             orders = db_manager.get_orders_by_cookie(cookie_id, limit=1000)  # 增加限制数量
             for order in orders:
-                if not _is_sell_order(order):
-                    excluded_non_sell_count += 1
+                if _normalize_order_trade_side(order.get('trade_side')) == 'buy':
+                    excluded_buy_count += 1
                     continue
 
                 buyer_nick = str(order.get('buyer_nick') or '').strip()
@@ -8508,8 +8524,8 @@ def get_user_orders(current_user: Dict[str, Any] = Depends(get_current_user)):
         # 按创建时间倒序排列
         all_orders.sort(key=lambda x: x.get('created_at', ''), reverse=True)
 
-        if excluded_non_sell_count > 0:
-            log_with_user('info', f"订单列表已过滤非卖出订单 {excluded_non_sell_count} 条", current_user)
+        if excluded_buy_count > 0:
+            log_with_user('info', f"订单列表已过滤买入订单 {excluded_buy_count} 条", current_user)
 
         log_with_user('info', f"用户订单查询成功，共 {len(all_orders)} 条记录", current_user)
         return {"success": True, "data": all_orders}
@@ -8651,12 +8667,14 @@ async def refresh_order_status(order_id: str, current_user: Dict[str, Any] = Dep
         item_id = order.get('item_id')
         buyer_id = order.get('buyer_id')
         sid = order.get('sid')
+        refresh_trade_side = _resolve_trade_side_for_order_refresh(order)
 
         result = await xianyu_instance.fetch_order_detail_info(
             order_id=order_id,
             item_id=item_id,
             buyer_id=buyer_id,
             sid=sid,
+            trade_side=refresh_trade_side,
             force_refresh=True  # 强制刷新，跳过缓存
         )
 
