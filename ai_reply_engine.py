@@ -5,6 +5,7 @@ AI回复引擎模块 - 统一意图识别与回复生成
 - 将意图判断和回复生成合并为一次AI调用
 - AI根据完整上下文自行判断意图并生成回复
 - 避免关键词误判导致的不当回复
+- 支持多种API类型：OpenAI / OpenAI Responses / Gemini / Anthropic / Azure OpenAI / Ollama / DashScope
 """
 
 import json
@@ -13,7 +14,6 @@ import requests
 import threading
 from typing import List, Dict, Optional
 from loguru import logger
-from openai import OpenAI
 from db_manager import db_manager
 
 
@@ -46,34 +46,23 @@ class AIReplyEngine:
 如果客户明确询问退款，回复："虚拟产品，一旦发出是不可以退款的"'''
         }
     
-    def _create_openai_client(self, cookie_id: str) -> Optional[OpenAI]:
-        """创建指定账号的OpenAI客户端（无状态）"""
-        settings = db_manager.get_ai_reply_settings(cookie_id)
-        if not settings['ai_enabled'] or not settings['api_key']:
-            return None
+    def _resolve_api_type(self, settings: dict) -> str:
+        """根据设置解析实际的API类型（支持显式设置和自动检测）"""
+        api_type = (settings.get('api_type') or '').strip()
+        if api_type:
+            return api_type
 
-        try:
-            base_url = settings['base_url'].rstrip('/')
-            # 确保 base_url 以 /v1 结尾（OpenAI SDK 要求）
-            if not base_url.endswith('/v1'):
-                base_url = base_url + '/v1'
-            logger.info(f"创建OpenAI客户端: base_url={base_url}")
-            client = OpenAI(
-                api_key=settings['api_key'],
-                base_url=base_url
-            )
-            return client
-        except Exception as e:
-            logger.error(f"创建OpenAI客户端失败 {cookie_id}: {e}")
-            return None
+        # 向后兼容：自动检测
+        if self._is_dashscope_app_api(settings):
+            return 'dashscope'
+        if self._is_gemini_api(settings):
+            return 'gemini'
+        return 'openai'
 
-    def _is_dashscope_api(self, settings: dict) -> bool:
-        """判断是否为DashScope API"""
-        model_name = settings.get('model_name', '')
-        base_url = settings.get('base_url', '')
-        is_custom_model = model_name.lower() in ['custom', '自定义', 'dashscope', 'qwen-custom']
-        is_dashscope_url = 'dashscope.aliyuncs.com' in base_url
-        return is_custom_model and is_dashscope_url
+    def _is_dashscope_app_api(self, settings: dict) -> bool:
+        """判断是否为DashScope应用API（/apps/模式）"""
+        base_url = (settings.get('base_url') or '').strip().rstrip('/')
+        return 'dashscope.aliyuncs.com' in base_url and '/apps/' in base_url
 
     def _is_gemini_api(self, settings: dict) -> bool:
         """判断是否为Gemini API"""
@@ -247,15 +236,147 @@ class AIReplyEngine:
             logger.error(f"Gemini API 响应格式错误: {result} - {e}")
             raise Exception(f"Gemini API 响应格式错误: {result}")
 
-    def _call_openai_api(self, client: OpenAI, settings: dict, messages: list, max_tokens: int = 100, temperature: float = 0.7) -> str:
-        """调用OpenAI兼容API"""
-        response = client.chat.completions.create(
-            model=settings['model_name'],
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature
-        )
-        return response.choices[0].message.content.strip()
+    def _call_openai_chat_api(self, settings: dict, messages: list, max_tokens: int = 100, temperature: float = 0.7) -> str:
+        """调用OpenAI Chat Completions API（兼容OpenAI / Ollama / 其他兼容服务）"""
+        base_url = settings['base_url'].rstrip('/')
+        if not base_url.endswith('/v1'):
+            base_url = base_url + '/v1'
+        url = f"{base_url}/chat/completions"
+
+        headers = {"Content-Type": "application/json"}
+        api_key = settings.get('api_key', '')
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        data = {
+            "model": settings['model_name'],
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature
+        }
+
+        logger.info(f"OpenAI Chat API请求: {url}")
+        response = requests.post(url, headers=headers, json=data, timeout=30)
+
+        if response.status_code != 200:
+            logger.error(f"OpenAI Chat API请求失败: {response.status_code} - {response.text}")
+            raise Exception(f"OpenAI Chat API请求失败: {response.status_code} - {response.text}")
+
+        result = response.json()
+        return result['choices'][0]['message']['content'].strip()
+
+    def _call_openai_responses_api(self, settings: dict, messages: list, max_tokens: int = 100, temperature: float = 0.7) -> str:
+        """调用OpenAI Responses API"""
+        base_url = settings['base_url'].rstrip('/')
+        if not base_url.endswith('/v1'):
+            base_url = base_url + '/v1'
+        url = f"{base_url}/responses"
+
+        headers = {
+            "Authorization": f"Bearer {settings['api_key']}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "model": settings['model_name'],
+            "input": messages,
+            "max_output_tokens": max_tokens,
+            "temperature": temperature
+        }
+
+        logger.info(f"OpenAI Responses API请求: {url}")
+        response = requests.post(url, headers=headers, json=data, timeout=30)
+
+        if response.status_code != 200:
+            logger.error(f"OpenAI Responses API请求失败: {response.status_code} - {response.text}")
+            raise Exception(f"OpenAI Responses API请求失败: {response.status_code} - {response.text}")
+
+        result = response.json()
+        # Responses API 返回 output_text 字段
+        if 'output_text' in result:
+            return result['output_text'].strip()
+        # 兼容解析 output 数组
+        for item in result.get('output', []):
+            if item.get('type') == 'message':
+                for content in item.get('content', []):
+                    if content.get('type') == 'output_text':
+                        return content['text'].strip()
+        raise Exception(f"OpenAI Responses API响应格式错误: {result}")
+
+    def _call_anthropic_api(self, settings: dict, messages: list, max_tokens: int = 100, temperature: float = 0.7) -> str:
+        """调用Anthropic Claude Messages API"""
+        base_url = settings['base_url'].rstrip('/')
+        if base_url.endswith('/v1'):
+            url = f"{base_url}/messages"
+        else:
+            url = f"{base_url}/v1/messages"
+
+        headers = {
+            "x-api-key": settings['api_key'],
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json"
+        }
+
+        # Anthropic 格式：system 单独提取，messages 只包含 user/assistant
+        system_content = ""
+        api_messages = []
+        for msg in messages:
+            if msg['role'] == 'system':
+                system_content = msg['content']
+            else:
+                api_messages.append({"role": msg['role'], "content": msg['content']})
+
+        data = {
+            "model": settings['model_name'],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": api_messages
+        }
+        if system_content:
+            data["system"] = system_content
+
+        logger.info(f"Anthropic API请求: {url}")
+        response = requests.post(url, headers=headers, json=data, timeout=30)
+
+        if response.status_code != 200:
+            logger.error(f"Anthropic API请求失败: {response.status_code} - {response.text}")
+            raise Exception(f"Anthropic API请求失败: {response.status_code} - {response.text}")
+
+        result = response.json()
+        return result['content'][0]['text'].strip()
+
+    def _call_azure_openai_api(self, settings: dict, messages: list, max_tokens: int = 100, temperature: float = 0.7) -> str:
+        """调用Azure OpenAI API"""
+        base_url = settings['base_url'].rstrip('/')
+        # Azure URL 格式: https://{resource}.openai.azure.com/openai/deployments/{deployment}/chat/completions?api-version=xxx
+        # 用户应在 base_url 中填入完整的 deployment URL
+        if '/chat/completions' in base_url:
+            url = base_url
+        else:
+            url = f"{base_url}/chat/completions"
+
+        if 'api-version' not in url:
+            separator = '&' if '?' in url else '?'
+            url = f"{url}{separator}api-version=2024-02-01"
+
+        headers = {
+            "api-key": settings['api_key'],
+            "Content-Type": "application/json"
+        }
+        data = {
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature
+        }
+
+        logger.info(f"Azure OpenAI API请求: {url.split('?')[0]}")
+        response = requests.post(url, headers=headers, json=data, timeout=30)
+
+        if response.status_code != 200:
+            logger.error(f"Azure OpenAI API请求失败: {response.status_code} - {response.text}")
+            raise Exception(f"Azure OpenAI API请求失败: {response.status_code} - {response.text}")
+
+        result = response.json()
+        return result['choices'][0]['message']['content'].strip()
 
     def is_ai_enabled(self, cookie_id: str) -> bool:
         """检查指定账号是否启用AI回复"""
@@ -358,23 +479,31 @@ class AIReplyEngine:
                     {"role": "user", "content": user_prompt}
                 ]
 
-                # 9. 调用AI生成回复
+                # 9. 根据API类型调用对应的AI接口
                 reply = None
+                api_type = self._resolve_api_type(settings)
+                logger.info(f"使用 {api_type} API生成回复")
 
-                if self._is_dashscope_api(settings):
-                    logger.info("使用DashScope API生成回复")
-                    reply = self._call_dashscope_api(settings, messages, max_tokens=150, temperature=0.7)
-                
-                elif self._is_gemini_api(settings):
-                    logger.info("使用Gemini API生成回复")
+                if api_type == 'dashscope':
+                    # DashScope有两种模式：
+                    # 1) /apps/{app_id} 应用模式 -> 走百炼应用API
+                    # 2) compatible-mode/v1 兼容模式 -> 走OpenAI Chat Completions
+                    if self._is_dashscope_app_api(settings):
+                        reply = self._call_dashscope_api(settings, messages, max_tokens=150, temperature=0.7)
+                    else:
+                        logger.info("DashScope检测为兼容模式（非/apps/），改走OpenAI兼容Chat API")
+                        reply = self._call_openai_chat_api(settings, messages, max_tokens=150, temperature=0.7)
+                elif api_type == 'gemini':
                     reply = self._call_gemini_api(settings, messages, max_tokens=150, temperature=0.7)
-                
+                elif api_type == 'openai_responses':
+                    reply = self._call_openai_responses_api(settings, messages, max_tokens=150, temperature=0.7)
+                elif api_type == 'anthropic':
+                    reply = self._call_anthropic_api(settings, messages, max_tokens=150, temperature=0.7)
+                elif api_type == 'azure_openai':
+                    reply = self._call_azure_openai_api(settings, messages, max_tokens=150, temperature=0.7)
                 else:
-                    logger.info("使用OpenAI兼容API生成回复")
-                    client = self._create_openai_client(cookie_id)
-                    if not client:
-                        return None
-                    reply = self._call_openai_api(client, settings, messages, max_tokens=150, temperature=0.7)
+                    # openai / ollama / 空值 均走 chat/completions
+                    reply = self._call_openai_chat_api(settings, messages, max_tokens=150, temperature=0.7)
 
                 # 10. 保存AI回复到对话记录
                 self.save_conversation(chat_id, cookie_id, user_id, item_id, "assistant", reply, intent=None)

@@ -171,6 +171,7 @@ class DBManager:
                 model_name TEXT DEFAULT 'qwen-plus',
                 api_key TEXT,
                 base_url TEXT DEFAULT 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+                api_type TEXT DEFAULT '',
                 max_discount_percent INTEGER DEFAULT 10,
                 max_discount_amount INTEGER DEFAULT 100,
                 max_bargain_rounds INTEGER DEFAULT 3,
@@ -190,6 +191,7 @@ class DBManager:
                 model_name TEXT NOT NULL,
                 api_key TEXT NOT NULL DEFAULT '',
                 base_url TEXT NOT NULL DEFAULT '',
+                api_type TEXT NOT NULL DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -740,6 +742,21 @@ Cookie数量: {cookie_count}
             self._ensure_delivery_rules_columns(cursor)
             # 回填历史订单交易方向，避免统计误计买入单
             self._backfill_orders_trade_side(cursor)
+            # 检查ai_reply_settings表是否存在api_type列
+            cursor.execute("PRAGMA table_info(ai_reply_settings)")
+            ai_columns = [column[1] for column in cursor.fetchall()]
+            if 'api_type' not in ai_columns:
+                logger.info("添加ai_reply_settings表的api_type列...")
+                cursor.execute("ALTER TABLE ai_reply_settings ADD COLUMN api_type TEXT DEFAULT ''")
+                logger.info("数据库迁移完成：添加api_type列")
+
+            # 检查ai_config_presets表是否存在api_type列
+            cursor.execute("PRAGMA table_info(ai_config_presets)")
+            preset_columns = [column[1] for column in cursor.fetchall()]
+            if 'api_type' not in preset_columns:
+                logger.info("添加ai_config_presets表的api_type列...")
+                cursor.execute("ALTER TABLE ai_config_presets ADD COLUMN api_type TEXT NOT NULL DEFAULT ''")
+                logger.info("数据库迁移完成：添加ai_config_presets.api_type列")
 
         except Exception as e:
             logger.error(f"数据库迁移失败: {e}")
@@ -3142,16 +3159,17 @@ Cookie数量: {cookie_count}
                 cursor = self.conn.cursor()
                 cursor.execute('''
                 INSERT OR REPLACE INTO ai_reply_settings
-                (cookie_id, ai_enabled, model_name, api_key, base_url,
+                (cookie_id, ai_enabled, model_name, api_key, base_url, api_type,
                  max_discount_percent, max_discount_amount, max_bargain_rounds,
                  custom_prompts, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ''', (
                     cookie_id,
                     settings.get('ai_enabled', False),
                     settings.get('model_name', 'qwen-plus'),
                     settings.get('api_key', ''),
                     settings.get('base_url', 'https://dashscope.aliyuncs.com/compatible-mode/v1'),
+                    settings.get('api_type', ''),
                     settings.get('max_discount_percent', 10),
                     settings.get('max_discount_amount', 100),
                     settings.get('max_bargain_rounds', 3),
@@ -3171,7 +3189,7 @@ Cookie数量: {cookie_count}
             try:
                 cursor = self.conn.cursor()
                 cursor.execute('''
-                SELECT ai_enabled, model_name, api_key, base_url,
+                SELECT ai_enabled, model_name, api_key, base_url, api_type,
                        max_discount_percent, max_discount_amount, max_bargain_rounds,
                        custom_prompts
                 FROM ai_reply_settings WHERE cookie_id = ?
@@ -3184,10 +3202,11 @@ Cookie数量: {cookie_count}
                         'model_name': result[1],
                         'api_key': result[2],
                         'base_url': result[3],
-                        'max_discount_percent': result[4],
-                        'max_discount_amount': result[5],
-                        'max_bargain_rounds': result[6],
-                        'custom_prompts': result[7]
+                        'api_type': result[4] or '',
+                        'max_discount_percent': result[5],
+                        'max_discount_amount': result[6],
+                        'max_bargain_rounds': result[7],
+                        'custom_prompts': result[8]
                     }
                 else:
                     # 返回默认设置
@@ -3196,6 +3215,7 @@ Cookie数量: {cookie_count}
                         'model_name': 'qwen-plus',
                         'api_key': '',
                         'base_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+                        'api_type': '',
                         'max_discount_percent': 10,
                         'max_discount_amount': 100,
                         'max_bargain_rounds': 3,
@@ -3208,6 +3228,7 @@ Cookie数量: {cookie_count}
                     'model_name': 'qwen-plus',
                     'api_key': '',
                     'base_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+                    'api_type': '',
                     'max_discount_percent': 10,
                     'max_discount_amount': 100,
                     'max_bargain_rounds': 3,
@@ -3220,7 +3241,7 @@ Cookie数量: {cookie_count}
             try:
                 cursor = self.conn.cursor()
                 cursor.execute('''
-                SELECT cookie_id, ai_enabled, model_name, api_key, base_url,
+                SELECT cookie_id, ai_enabled, model_name, api_key, base_url, api_type,
                        max_discount_percent, max_discount_amount, max_bargain_rounds,
                        custom_prompts
                 FROM ai_reply_settings
@@ -3234,10 +3255,11 @@ Cookie数量: {cookie_count}
                         'model_name': row[2],
                         'api_key': row[3],
                         'base_url': row[4],
-                        'max_discount_percent': row[5],
-                        'max_discount_amount': row[6],
-                        'max_bargain_rounds': row[7],
-                        'custom_prompts': row[8]
+                        'api_type': row[5] or '',
+                        'max_discount_percent': row[6],
+                        'max_discount_amount': row[7],
+                        'max_bargain_rounds': row[8],
+                        'custom_prompts': row[9]
                     }
 
                 return result
@@ -3246,20 +3268,21 @@ Cookie数量: {cookie_count}
                 return {}
 
     # -------------------- AI配置预设操作 --------------------
-    def save_ai_config_preset(self, user_id: int, preset_name: str, model_name: str, api_key: str = '', base_url: str = '') -> int:
+    def save_ai_config_preset(self, user_id: int, preset_name: str, model_name: str, api_key: str = '', base_url: str = '', api_type: str = '') -> int:
         """保存AI配置预设（存在则更新）"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
                 cursor.execute('''
-                INSERT INTO ai_config_presets (user_id, preset_name, model_name, api_key, base_url, updated_at)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                INSERT INTO ai_config_presets (user_id, preset_name, model_name, api_key, base_url, api_type, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(user_id, preset_name) DO UPDATE SET
                     model_name = excluded.model_name,
                     api_key = excluded.api_key,
                     base_url = excluded.base_url,
+                    api_type = excluded.api_type,
                     updated_at = CURRENT_TIMESTAMP
-                ''', (user_id, preset_name, model_name, api_key, base_url))
+                ''', (user_id, preset_name, model_name, api_key, base_url, api_type))
                 self.conn.commit()
                 preset_id = cursor.lastrowid
                 logger.debug(f"保存AI配置预设: user_id={user_id}, preset_name={preset_name}")
@@ -3274,7 +3297,7 @@ Cookie数量: {cookie_count}
             try:
                 cursor = self.conn.cursor()
                 cursor.execute('''
-                SELECT id, preset_name, model_name, api_key, base_url, created_at, updated_at
+                SELECT id, preset_name, model_name, api_key, base_url, api_type, created_at, updated_at
                 FROM ai_config_presets
                 WHERE user_id = ?
                 ORDER BY updated_at DESC
@@ -3287,8 +3310,9 @@ Cookie数量: {cookie_count}
                         'model_name': row[2],
                         'api_key': row[3],
                         'base_url': row[4],
-                        'created_at': row[5],
-                        'updated_at': row[6]
+                        'api_type': row[5] or '',
+                        'created_at': row[6],
+                        'updated_at': row[7]
                     })
                 return presets
             except Exception as e:

@@ -277,6 +277,368 @@
   margin-right: 0;
 }
 
+/* ================================
+   AI回复配置 - 全量界面视觉增强
+   ================================ */
+#aiReplyConfigModal .modal-dialog {
+  max-width: 900px;
+}
+
+#aiReplyConfigModal .ai-reply-content {
+  overflow: hidden;
+}
+
+#aiReplyConfigModal .ai-reply-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+#aiReplyConfigModal .ai-reply-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#aiReplyConfigModal .ai-reply-subtitle {
+  font-size: 0.82rem;
+  color: rgba(255, 255, 255, 0.84);
+}
+
+#aiReplyConfigModal .ai-reply-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#aiReplyConfigModal .ai-modal-intro {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(79, 70, 229, 0.16);
+  background: linear-gradient(120deg, rgba(99, 102, 241, 0.1), rgba(6, 182, 212, 0.1));
+}
+
+#aiReplyConfigModal .ai-intro-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: rgba(79, 70, 229, 0.16);
+  color: var(--primary-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+#aiReplyConfigModal .ai-intro-title {
+  font-weight: 700;
+  color: var(--dark-color);
+  line-height: 1.2;
+}
+
+#aiReplyConfigModal .ai-intro-text {
+  font-size: 0.86rem;
+  color: var(--secondary-color);
+  margin-top: 2px;
+}
+
+#aiReplyConfigModal .ai-section-card {
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+#aiReplyConfigModal .ai-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+#aiReplyConfigModal .ai-section-title {
+  display: flex;
+  flex-direction: column;
+}
+
+#aiReplyConfigModal .ai-section-desc {
+  font-size: 0.76rem;
+  opacity: 0.88;
+}
+
+#aiReplyConfigModal .ai-section-tag {
+  font-size: 0.68rem;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+#aiReplyConfigModal .ai-basic-card .card-body {
+  background:
+    radial-gradient(circle at right top, rgba(79, 70, 229, 0.09), transparent 45%),
+    radial-gradient(circle at left bottom, rgba(6, 182, 212, 0.09), transparent 42%);
+}
+
+#aiReplyConfigModal .ai-basic-overview {
+  display: grid;
+  grid-template-columns: 1.25fr 1fr;
+  gap: 12px;
+}
+
+#aiReplyConfigModal .ai-account-panel,
+#aiReplyConfigModal .ai-enable-panel,
+#aiReplyConfigModal .ai-config-block,
+#aiReplyConfigModal .ai-config-grid {
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(79, 70, 229, 0.14);
+  border-radius: 14px;
+  padding: 14px;
+}
+
+#aiReplyConfigModal .ai-account-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#aiReplyConfigModal .ai-account-field i {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, var(--primary-color), var(--primary-hover));
+  color: #fff;
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+
+#aiReplyConfigModal .ai-account-field .form-control {
+  font-weight: 600;
+}
+
+#aiReplyConfigModal .ai-enable-panel {
+  display: flex;
+  align-items: center;
+}
+
+#aiReplyConfigModal .ai-enable-switch {
+  margin: 0;
+  width: 100%;
+}
+
+#aiReplyConfigModal .ai-enable-switch .form-check-input {
+  width: 2.7rem;
+  height: 1.4rem;
+}
+
+#aiReplyConfigModal .ai-config-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#aiReplyConfigModal .ai-preset-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#aiReplyConfigModal .ai-preset-controls .form-select {
+  flex: 1;
+}
+
+#aiReplyConfigModal .ai-preset-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+#aiReplyConfigModal .ai-config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+#aiReplyConfigModal .ai-config-item {
+  min-width: 0;
+}
+
+#aiReplyConfigModal .ai-config-item-wide {
+  grid-column: 1 / -1;
+}
+
+#aiReplyConfigModal .ai-endpoint-preview {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px dashed rgba(16, 185, 129, 0.45);
+  background: rgba(16, 185, 129, 0.07);
+  color: #047857;
+  font-family: 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  word-break: break-all;
+  min-height: 34px;
+}
+
+#aiReplyConfigModal .ai-bargain-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+#aiReplyConfigModal .ai-metric-card {
+  border-radius: 12px;
+  border: 1px solid rgba(79, 70, 229, 0.14);
+  background: rgba(255, 255, 255, 0.76);
+  padding: 12px;
+}
+
+#aiReplyConfigModal .ai-prompt-tip {
+  border-radius: 12px;
+  border: 1px dashed rgba(14, 165, 233, 0.42);
+  background: rgba(14, 165, 233, 0.08);
+  color: #0369a1;
+  font-size: 0.86rem;
+  padding: 10px 12px;
+}
+
+#aiReplyConfigModal .ai-prompt-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+#aiReplyConfigModal .ai-prompt-card {
+  border-radius: 12px;
+  border: 1px solid rgba(79, 70, 229, 0.14);
+  background: rgba(255, 255, 255, 0.76);
+  padding: 12px;
+}
+
+#aiReplyConfigModal .ai-prompt-card-wide {
+  grid-column: 1 / -1;
+}
+
+#aiReplyConfigModal .ai-prompt-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+#aiReplyConfigModal .ai-prompt-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+#aiReplyConfigModal .ai-prompt-dot-price {
+  background: #f59e0b;
+}
+
+#aiReplyConfigModal .ai-prompt-dot-tech {
+  background: #06b6d4;
+}
+
+#aiReplyConfigModal .ai-prompt-dot-default {
+  background: #6366f1;
+}
+
+#aiReplyConfigModal .ai-prompt-textarea {
+  height: 132px;
+  min-height: 132px;
+  resize: vertical;
+}
+
+#aiReplyConfigModal .ai-test-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+#aiReplyConfigModal .ai-test-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 2px;
+}
+
+#aiReplyConfigModal .ai-test-btn {
+  min-width: 124px;
+}
+
+#aiReplyConfigModal .ai-test-result .alert {
+  border-radius: 12px;
+  border: 1px solid rgba(59, 130, 246, 0.28);
+}
+
+#aiReplyConfigModal .ai-reply-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+#aiReplyConfigModal .ai-footer-note {
+  font-size: 0.82rem;
+  color: var(--secondary-color);
+}
+
+#aiReplyConfigModal .ai-footer-actions {
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 768px) {
+  #aiReplyConfigModal .ai-reply-header {
+    align-items: center;
+  }
+
+  #aiReplyConfigModal .ai-reply-subtitle {
+    display: none;
+  }
+
+  #aiReplyConfigModal .ai-modal-intro {
+    padding: 10px 12px;
+  }
+
+  #aiReplyConfigModal .ai-bargain-grid,
+  #aiReplyConfigModal .ai-prompt-grid,
+  #aiReplyConfigModal .ai-test-grid,
+  #aiReplyConfigModal .ai-basic-overview,
+  #aiReplyConfigModal .ai-config-grid {
+    grid-template-columns: 1fr;
+  }
+
+  #aiReplyConfigModal .ai-preset-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  #aiReplyConfigModal .ai-preset-actions {
+    justify-content: flex-end;
+  }
+
+  #aiReplyConfigModal .ai-test-actions,
+  #aiReplyConfigModal .ai-reply-footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  #aiReplyConfigModal .ai-footer-actions {
+    justify-content: flex-end;
+  }
+}
+
 @media (max-width: 768px) {
   .container {
     margin-top: 1rem;

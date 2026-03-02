@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>闲鱼自动回复管理系统</title>
+  <title>闲鱼管理系统</title>
   <link rel="icon" type="image/png" href="/static/favicon.png">
   <!-- 防止主题闪烁：先隐藏页面，设置好主题后再显示 -->
   <style>
@@ -4320,31 +4320,49 @@
 
   <!-- AI回复配置模态框 -->
   <div class="modal fade" id="aiReplyConfigModal" tabindex="-1">
-    <div class="modal-dialog modal-lg">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h5 class="modal-title">
-            <i class="bi bi-robot me-2"></i>AI回复配置
-          </h5>
+    <div class="modal-dialog modal-lg ai-reply-dialog">
+      <div class="modal-content ai-reply-content">
+        <div class="modal-header ai-reply-header">
+          <div class="ai-reply-title-group">
+            <h5 class="modal-title">
+              <i class="bi bi-robot me-2"></i>AI回复配置
+            </h5>
+            <small class="ai-reply-subtitle">为当前账号统一管理模型、供应商、策略与联调测试</small>
+          </div>
           <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
         </div>
         <div class="modal-body">
-          <form id="aiReplyConfigForm">
+          <form id="aiReplyConfigForm" class="ai-reply-form">
             <input type="hidden" id="aiConfigAccountId">
 
+            <div class="ai-modal-intro mb-3">
+              <div class="ai-intro-icon"><i class="bi bi-stars"></i></div>
+              <div class="ai-intro-content">
+                <div class="ai-intro-title">配置建议</div>
+                <div class="ai-intro-text">先完成基础连接，再配置议价和提示词，最后在测试区验证回复效果。</div>
+              </div>
+            </div>
+
             <!-- 基本设置 -->
-            <div class="card mb-3">
-              <div class="card-header">
-                <h6 class="mb-0"><i class="bi bi-gear me-2"></i>基本设置</h6>
+            <div class="card mb-3 ai-section-card ai-basic-card">
+              <div class="card-header ai-section-header">
+                <div class="ai-section-title">
+                  <h6 class="mb-0"><i class="bi bi-gear me-2"></i>基本设置</h6>
+                  <small class="ai-section-desc">账号与连接参数</small>
+                </div>
+                <span class="ai-section-tag">连接层</span>
               </div>
               <div class="card-body">
-                <div class="row mb-3">
-                  <div class="col-md-6">
-                    <label class="form-label">账号ID</label>
-                    <input type="text" class="form-control" id="aiConfigAccountIdDisplay" readonly>
+                <div class="ai-basic-overview mb-3">
+                  <div class="ai-account-panel">
+                    <label class="form-label mb-2">账号ID</label>
+                    <div class="ai-account-field">
+                      <i class="bi bi-person-badge"></i>
+                      <input type="text" class="form-control" id="aiConfigAccountIdDisplay" readonly>
+                    </div>
                   </div>
-                  <div class="col-md-6">
-                    <div class="form-check form-switch mt-4">
+                  <div class="ai-enable-panel">
+                    <div class="form-check form-switch ai-enable-switch">
                       <input class="form-check-input" type="checkbox" id="aiReplyEnabled"
                         onchange="toggleAIReplySettings()">
                       <label class="form-check-label" for="aiReplyEnabled">
@@ -4355,22 +4373,24 @@
                   </div>
                 </div>
 
-                <div id="aiReplySettings" style="display: none;">
-                  <div class="row mb-3 align-items-end">
-                    <div class="col">
-                      <label class="form-label">API配置预设</label>
-                      <div class="d-flex gap-2">
-                        <select class="form-select" id="aiPresetSelect" onchange="loadAIPreset()">
-                          <option value="">-- 选择预设 --</option>
-                        </select>
+                <div id="aiReplySettings" class="ai-config-stack" style="display: none;">
+                  <div class="ai-config-block ai-preset-block">
+                    <label class="form-label mb-1">API配置预设</label>
+                    <small class="form-text text-muted d-block mb-2">保存常用配置，一键切换到不同供应商参数</small>
+                    <div class="ai-preset-controls">
+                      <select class="form-select" id="aiPresetSelect" onchange="loadAIPreset()">
+                        <option value="">-- 选择预设 --</option>
+                      </select>
+                      <div class="ai-preset-actions">
                         <button type="button" class="btn btn-outline-primary btn-sm text-nowrap" onclick="saveCurrentAsPreset()">保存预设</button>
                         <button type="button" class="btn btn-outline-danger btn-sm text-nowrap" id="deletePresetBtn" style="display:none;" onclick="deleteSelectedPreset()">删除</button>
                       </div>
                     </div>
                   </div>
-                  <div class="row mb-3">
-                    <div class="col-md-6">
-                      <label for="aiModelName" class="form-label">AI模型</label>
+
+                  <div class="ai-config-grid">
+                    <div class="ai-config-item">
+                      <label for="aiModelName" class="form-label"><i class="bi bi-cpu me-1"></i>AI模型</label>
                       <select class="form-select" id="aiModelName" onchange="toggleCustomModelInput()">
                         <optgroup label="DashScope (推荐)">
                           <option value="deepseek-v3.2">DeepSeek V3.2</option>
@@ -4389,111 +4409,163 @@
                       <input type="text" class="form-control mt-2" id="customModelName" placeholder="请输入自定义模型名称"
                         style="display: none;">
                     </div>
-                    <div class="col-md-6">
-                      <label for="aiBaseUrl" class="form-label">API地址</label>
-                      <input type="url" class="form-control" id="aiBaseUrl"
-                        value="https://dashscope.aliyuncs.com/compatible-mode/v1" placeholder="API Base URL">
-                    </div>
-                  </div>
 
-                  <div class="mb-3">
-                    <label for="aiApiKey" class="form-label">API密钥 <span class="text-danger">*</span></label>
-                    <input type="password" class="form-control" id="aiApiKey" placeholder="请输入API密钥" required>
-                    <small class="form-text text-muted">
-                      通义千问请使用DashScope API Key，GPT请使用OpenAI API Key
-                    </small>
+                    <div class="ai-config-item">
+                      <label for="aiApiType" class="form-label"><i class="bi bi-diagram-3 me-1"></i>API类型</label>
+                      <select class="form-select" id="aiApiType" onchange="updateApiUrlPreview()">
+                        <option value="">自动识别</option>
+                        <option value="openai">OpenAI (Chat Completions)</option>
+                        <option value="openai_responses">OpenAI (Responses API)</option>
+                        <option value="gemini">Google Gemini</option>
+                        <option value="anthropic">Anthropic Claude</option>
+                        <option value="azure_openai">Azure OpenAI</option>
+                        <option value="ollama">Ollama</option>
+                      </select>
+                      <small class="form-text text-muted">选择你的API服务商，或使用自动识别</small>
+                    </div>
+
+                    <div class="ai-config-item ai-config-item-wide">
+                      <label for="aiBaseUrl" class="form-label"><i class="bi bi-link-45deg me-1"></i>API地址</label>
+                      <input type="url" class="form-control" id="aiBaseUrl"
+                        value="https://dashscope.aliyuncs.com/compatible-mode/v1" placeholder="API Base URL"
+                        oninput="updateApiUrlPreview()">
+                      <div class="ai-endpoint-preview" id="apiUrlPreview"></div>
+                    </div>
+
+                    <div class="ai-config-item ai-config-item-wide">
+                      <label for="aiApiKey" class="form-label"><i class="bi bi-key me-1"></i>API密钥 <span class="text-danger">*</span></label>
+                      <input type="password" class="form-control" id="aiApiKey" placeholder="请输入API密钥" required>
+                      <small class="form-text text-muted">通义千问请使用DashScope API Key，GPT请使用OpenAI API Key</small>
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
 
             <!-- 议价设置 -->
-            <div class="card mb-3" id="bargainSettings" style="display: none;">
-              <div class="card-header">
-                <h6 class="mb-0"><i class="bi bi-currency-dollar me-2"></i>议价设置</h6>
+            <div class="card mb-3 ai-section-card" id="bargainSettings" style="display: none;">
+              <div class="card-header ai-section-header">
+                <div class="ai-section-title">
+                  <h6 class="mb-0"><i class="bi bi-currency-dollar me-2"></i>议价设置</h6>
+                  <small class="ai-section-desc">控制自动让价边界与节奏</small>
+                </div>
+                <span class="ai-section-tag">策略层</span>
               </div>
               <div class="card-body">
-                <div class="row mb-3">
-                  <div class="col-md-4">
+                <div class="ai-bargain-grid">
+                  <div class="ai-metric-card">
                     <label for="maxDiscountPercent" class="form-label">最大优惠百分比</label>
                     <div class="input-group">
                       <input type="number" class="form-control" id="maxDiscountPercent"
                              min="0" max="50" value="10">
                       <span class="input-group-text">%</span>
                     </div>
+                    <small class="form-text text-muted mt-2 d-block">限制单次让价比例，建议 5-15</small>
                   </div>
-                  <div class="col-md-4">
+
+                  <div class="ai-metric-card">
                     <label for="maxDiscountAmount" class="form-label">最大优惠金额</label>
                     <div class="input-group">
                       <input type="number" class="form-control" id="maxDiscountAmount"
                              min="0" value="100">
                       <span class="input-group-text">元</span>
                     </div>
+                    <small class="form-text text-muted mt-2 d-block">限制累计让利总额，避免超预算</small>
                   </div>
-                  <div class="col-md-4">
+
+                  <div class="ai-metric-card">
                     <label for="maxBargainRounds" class="form-label">最大议价轮数</label>
                     <input type="number" class="form-control" id="maxBargainRounds"
                            min="1" max="10" value="3">
+                    <small class="form-text text-muted mt-2 d-block">超过轮数后自动保持底线回复</small>
                   </div>
                 </div>
               </div>
             </div>
 
             <!-- 提示词设置 -->
-            <div class="card mb-3" id="promptSettings" style="display: none;">
-              <div class="card-header">
-                <h6 class="mb-0"><i class="bi bi-chat-quote me-2"></i>提示词设置</h6>
+            <div class="card mb-3 ai-section-card" id="promptSettings" style="display: none;">
+              <div class="card-header ai-section-header">
+                <div class="ai-section-title">
+                  <h6 class="mb-0"><i class="bi bi-chat-quote me-2"></i>提示词设置</h6>
+                  <small class="ai-section-desc">按场景微调回复风格与边界</small>
+                </div>
+                <span class="ai-section-tag">语义层</span>
               </div>
               <div class="card-body">
-                <small class="form-text text-muted d-block mb-3">留空使用系统默认提示词，填写则覆盖对应场景的默认策略。</small>
-
-                <div class="mb-3">
-                  <label class="form-label fw-bold">议价场景</label>
-                  <small class="form-text text-muted d-block mb-1">当买家明确要求降价、优惠、砍价时的应对策略</small>
-                  <textarea class="form-control" id="promptPrice" rows="4"
-                            placeholder="【议价场景】&#10;策略：根据议价次数递减优惠&#10;- 第1次：可小幅优惠，表达诚意&#10;- 第2次：中等优惠，强调已是优惠价&#10;- 第3次及以后：最大优惠或坚持底线&#10;语气友好但坚定，突出商品价值和优势。"></textarea>
+                <div class="ai-prompt-tip mb-3">
+                  <i class="bi bi-lightbulb me-2"></i>
+                  留空使用系统默认提示词，填写后仅覆盖对应场景，不影响其它场景策略。
                 </div>
 
-                <div class="mb-3">
-                  <label class="form-label fw-bold">技术/产品问题</label>
-                  <small class="form-text text-muted d-block mb-1">当买家询问产品功能、使用方法、技术细节时的回复策略</small>
-                  <textarea class="form-control" id="promptTech" rows="3"
-                            placeholder="【技术/产品问题】&#10;基于商品信息回答，不要自行发挥。&#10;如果问题超出商品信息范围，回复：&quot;等等，这个我需要看一看&quot;"></textarea>
-                </div>
+                <div class="ai-prompt-grid">
+                  <div class="ai-prompt-card">
+                    <div class="ai-prompt-head">
+                      <span class="ai-prompt-dot ai-prompt-dot-price"></span>
+                      <label class="form-label fw-bold mb-0">议价场景</label>
+                    </div>
+                    <small class="form-text text-muted d-block mb-2">当买家明确要求降价、优惠、砍价时的应对策略</small>
+                    <textarea class="form-control ai-prompt-textarea" id="promptPrice" rows="4"
+                              placeholder="【议价场景】&#10;策略：根据议价次数递减优惠&#10;- 第1次：可小幅优惠，表达诚意&#10;- 第2次：中等优惠，强调已是优惠价&#10;- 第3次及以后：最大优惠或坚持底线&#10;语气友好但坚定，突出商品价值和优势。"></textarea>
+                  </div>
 
-                <div class="mb-3">
-                  <label class="form-label fw-bold">一般咨询</label>
-                  <small class="form-text text-muted d-block mb-1">物流、售后、商品介绍等其他咨询的回复策略</small>
-                  <textarea class="form-control" id="promptDefault" rows="3"
-                            placeholder="【一般咨询】&#10;基于商品信息回答物流、售后等问题。&#10;如果问题超出商品信息范围，回复：&quot;等等，这个我需要看一看&quot;&#10;如果客户明确询问退款，回复：&quot;虚拟产品，一旦发出是不可以退款的&quot;"></textarea>
+                  <div class="ai-prompt-card">
+                    <div class="ai-prompt-head">
+                      <span class="ai-prompt-dot ai-prompt-dot-tech"></span>
+                      <label class="form-label fw-bold mb-0">技术/产品问题</label>
+                    </div>
+                    <small class="form-text text-muted d-block mb-2">当买家询问产品功能、使用方法、技术细节时的回复策略</small>
+                    <textarea class="form-control ai-prompt-textarea" id="promptTech" rows="3"
+                              placeholder="【技术/产品问题】&#10;基于商品信息回答，不要自行发挥。&#10;如果问题超出商品信息范围，回复：&quot;等等，这个我需要看一看&quot;"></textarea>
+                  </div>
+
+                  <div class="ai-prompt-card ai-prompt-card-wide">
+                    <div class="ai-prompt-head">
+                      <span class="ai-prompt-dot ai-prompt-dot-default"></span>
+                      <label class="form-label fw-bold mb-0">一般咨询</label>
+                    </div>
+                    <small class="form-text text-muted d-block mb-2">物流、售后、商品介绍等其他咨询的回复策略</small>
+                    <textarea class="form-control ai-prompt-textarea" id="promptDefault" rows="3"
+                              placeholder="【一般咨询】&#10;基于商品信息回答物流、售后等问题。&#10;如果问题超出商品信息范围，回复：&quot;等等，这个我需要看一看&quot;&#10;如果客户明确询问退款，回复：&quot;虚拟产品，一旦发出是不可以退款的&quot;"></textarea>
+                  </div>
                 </div>
               </div>
             </div>
 
             <!-- 测试区域 -->
-            <div class="card" id="testArea" style="display: none;">
-              <div class="card-header">
-                <h6 class="mb-0"><i class="bi bi-play-circle me-2"></i>功能测试</h6>
+            <div class="card ai-section-card" id="testArea" style="display: none;">
+              <div class="card-header ai-section-header">
+                <div class="ai-section-title">
+                  <h6 class="mb-0"><i class="bi bi-play-circle me-2"></i>功能测试</h6>
+                  <small class="ai-section-desc">联调参数并预览最终回复</small>
+                </div>
+                <span class="ai-section-tag">验证层</span>
               </div>
               <div class="card-body">
-                <div class="row mb-3">
-                  <div class="col-md-6">
+                <div class="ai-test-grid">
+                  <div class="ai-test-input">
                     <label for="testMessage" class="form-label">测试消息</label>
                     <input type="text" class="form-control" id="testMessage"
                            value="你好，这个商品能便宜点吗？" placeholder="输入测试消息">
                   </div>
-                  <div class="col-md-6">
+
+                  <div class="ai-test-input">
                     <label for="testItemPrice" class="form-label">商品价格</label>
                     <input type="number" class="form-control" id="testItemPrice"
                            value="100" placeholder="商品价格">
                   </div>
                 </div>
-                <button type="button" class="btn btn-outline-primary" onclick="testAIReply()">
-                  <i class="bi bi-play me-1"></i>测试AI回复
-                </button>
-                <div id="testResult" class="mt-3" style="display: none;">
-                  <div class="alert alert-info">
-                    <strong>AI回复：</strong>
+
+                <div class="ai-test-actions">
+                  <button type="button" class="btn btn-outline-primary ai-test-btn" onclick="testAIReply()">
+                    <i class="bi bi-play me-1"></i>测试AI回复
+                  </button>
+                  <small class="form-text text-muted">使用当前配置发起一次模拟请求，用于快速校验效果</small>
+                </div>
+
+                <div id="testResult" class="ai-test-result mt-3" style="display: none;">
+                  <div class="alert alert-info mb-0">
+                    <div class="fw-semibold mb-2"><i class="bi bi-chat-left-quote me-1"></i>AI回复结果</div>
                     <div id="testReplyContent"></div>
                   </div>
                 </div>
@@ -4501,11 +4573,16 @@
             </div>
           </form>
         </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-          <button type="button" class="btn btn-primary" onclick="saveAIReplyConfig()">
-            <i class="bi bi-check-lg me-1"></i>保存配置
-          </button>
+        <div class="modal-footer ai-reply-footer">
+          <div class="ai-footer-note">
+            <i class="bi bi-shield-check me-1"></i>配置仅作用于当前账号，可随时调整
+          </div>
+          <div class="ai-footer-actions">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+            <button type="button" class="btn btn-primary" onclick="saveAIReplyConfig()">
+              <i class="bi bi-check-lg me-1"></i>保存配置
+            </button>
+          </div>
         </div>
       </div>
     </div>

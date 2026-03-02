@@ -3597,6 +3597,8 @@ async function configAIReply(accountId) {
         customModelInput.value = modelName;
     }
     document.getElementById('aiBaseUrl').value = settings.base_url;
+    const normalizedApiType = settings.api_type === 'dashscope' ? '' : (settings.api_type || '');
+    document.getElementById('aiApiType').value = normalizedApiType;
     document.getElementById('aiApiKey').value = settings.api_key;
     document.getElementById('maxDiscountPercent').value = settings.max_discount_percent;
     document.getElementById('maxDiscountAmount').value = settings.max_discount_amount;
@@ -3612,6 +3614,7 @@ async function configAIReply(accountId) {
 
     // 切换设置显示状态
     toggleAIReplySettings();
+    updateApiUrlPreview();
     await loadAIPresets();
 
     // 显示模态框
@@ -3621,6 +3624,45 @@ async function configAIReply(accountId) {
     } catch (error) {
     console.error('获取AI回复设置失败:', error);
     showToast('获取AI回复设置失败', 'danger');
+    }
+}
+
+// 更新API请求地址预览
+function updateApiUrlPreview() {
+    const baseUrl = (document.getElementById('aiBaseUrl').value || '').replace(/\/+$/, '');
+    const apiType = document.getElementById('aiApiType').value;
+    const preview = document.getElementById('apiUrlPreview');
+    if (!preview || !baseUrl) {
+        if (preview) preview.textContent = '';
+        return;
+    }
+
+    const pathMap = {
+        'openai':           '/v1/chat/completions',
+        'openai_responses': '/v1/responses',
+        'anthropic':        '/v1/messages',
+        'azure_openai':     '/chat/completions',
+        'ollama':           '/v1/chat/completions',
+        'gemini':           '',
+    };
+
+    let path = pathMap[apiType];
+    if (path === undefined) {
+        // 自动识别 — 默认 chat/completions
+        path = '/v1/chat/completions';
+    }
+
+    if (!path) {
+        // Gemini 地址格式特殊，不追加路径
+        preview.textContent = '请求端点预览: ' + baseUrl;
+    } else if (apiType === 'azure_openai') {
+        // Azure 不自动加 /v1
+        const url = baseUrl.includes('/chat/completions') ? baseUrl : baseUrl + path;
+        preview.textContent = '请求端点预览: ' + url;
+    } else {
+        const base = baseUrl.endsWith('/v1') ? baseUrl : baseUrl + '/v1';
+        const suffix = path.replace('/v1', '');
+        preview.textContent = '请求端点预览: ' + base + suffix;
     }
 }
 
@@ -3685,6 +3727,7 @@ async function saveAIReplyConfig() {
         model_name: modelName,
         api_key: document.getElementById('aiApiKey').value,
         base_url: document.getElementById('aiBaseUrl').value,
+        api_type: document.getElementById('aiApiType').value,
         max_discount_percent: parseInt(document.getElementById('maxDiscountPercent').value),
         max_discount_amount: parseInt(document.getElementById('maxDiscountAmount').value),
         max_bargain_rounds: parseInt(document.getElementById('maxBargainRounds').value),
@@ -3821,10 +3864,12 @@ function _autoSelectMatchingPreset() {
     const curModel = modelSelect.value === 'custom' ? customModelInput.value : modelSelect.value;
     const curKey = document.getElementById('aiApiKey').value;
     const curUrl = document.getElementById('aiBaseUrl').value;
+    const curApiType = document.getElementById('aiApiType').value;
 
-    const match = _aiPresets.find(p =>
-        p.model_name === curModel && p.api_key === curKey && p.base_url === curUrl
-    );
+    const match = _aiPresets.find(p => {
+        const presetApiType = p.api_type === 'dashscope' ? '' : (p.api_type || '');
+        return p.model_name === curModel && p.api_key === curKey && p.base_url === curUrl && presetApiType === curApiType;
+    });
     select.value = match ? match.id : '';
 }
 
@@ -3858,6 +3903,9 @@ function loadAIPreset() {
 
     document.getElementById('aiBaseUrl').value = preset.base_url;
     document.getElementById('aiApiKey').value = preset.api_key;
+    const normalizedPresetApiType = preset.api_type === 'dashscope' ? '' : (preset.api_type || '');
+    document.getElementById('aiApiType').value = normalizedPresetApiType;
+    updateApiUrlPreview();
 
     showToast(`已切换到预设「${preset.preset_name}」`, 'success');
 }
@@ -3885,7 +3933,8 @@ async function saveCurrentAsPreset() {
                 preset_name: name.trim(),
                 model_name: modelName,
                 api_key: apiKey,
-                base_url: baseUrl
+                base_url: baseUrl,
+                api_type: document.getElementById('aiApiType').value
             })
         });
         showToast('预设保存成功', 'success');
@@ -14860,7 +14909,7 @@ function exportSearchResults() {
 
 
 // 默认版本号（当无法读取 version.txt 时使用）
-const DEFAULT_VERSION = 'v1.3.0';
+const DEFAULT_VERSION = 'v1.3.1';
 
 // 当前本地版本号（动态从 version.txt 读取）
 let LOCAL_VERSION = DEFAULT_VERSION;
@@ -14873,9 +14922,22 @@ let remoteVersionInfo = null;
 
 // 本地版本历史（远程服务禁用时使用）
 const LOCAL_VERSION_HISTORY = {
-    version: 'v1.3.0',
+    version: 'v1.3.1',
     intro: '本系统仅供个人学习研究使用，请勿用于商业用途。如有问题或建议，欢迎反馈。',
     versionHistory: [
+        {
+            version: 'v1.3.1',
+            date: '2026-03-02',
+            updates: [
+                '【新功能】AI回复配置新增API类型能力，支持OpenAI Chat/Responses、Gemini、Anthropic、Azure OpenAI、Ollama',
+                '【修复】修复DashScope兼容模式被误判为百炼应用导致报错“未找到app_id”的问题',
+                '【优化】AI配置预设支持api_type维度，保存/切换/自动匹配更准确',
+                '【优化】AI回复配置弹窗全量重构，按连接层/策略层/语义层/验证层分区并适配移动端与暗色模式',
+                '【优化】下线API类型中的“DashScope（百炼应用）”入口，历史值自动映射为自动识别',
+                '【优化】提示词三个输入框高度统一，提升编辑体验',
+                '【优化】浏览器标题统一为“闲鱼管理系统”'
+            ]
+        },
         {
             version: 'v1.3.0',
             date: '2026-03-01',
