@@ -1750,7 +1750,7 @@ async def send_message_api(request: SendMessageRequest):
 
 @app.get('/api/customer-service/conversations')
 def get_customer_service_conversations(current_user: Dict[str, Any] = Depends(get_current_user)):
-    """客服台会话列表（仅当前运行期消息）"""
+    """客服台会话列表（持久化消息）。"""
     user_id = current_user['user_id']
     manager = cookie_manager.manager
     user_cookies = db_manager.get_all_cookies(user_id)

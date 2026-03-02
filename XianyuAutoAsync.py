@@ -858,6 +858,12 @@ class XianyuLive:
         self.processed_message_ids_max_size = 10000  # 最大保存10000个消息ID，防止内存泄漏
         self.message_expire_time = 3600  # 消息过期时间（秒），默认1小时后可以重复回复
 
+        # 客服台出站消息短时去重（用于过滤系统发送后的WebSocket回显）
+        self.cs_outbound_recent_signatures = {}  # {signature: message_time_ms}
+        self.cs_outbound_dedupe_window_ms = 10000  # 10秒内同签名视为同一条消息
+        self.cs_outbound_signature_ttl_ms = 120000  # 最多保留2分钟，防止缓存膨胀
+        self.cs_outbound_signature_max_size = 3000  # 缓存上限
+
         # 初始化订单状态处理器
         self._init_order_status_handler()
 
@@ -6781,6 +6787,80 @@ Cookie数量: {cookie_count}
         except Exception as e:
             logger.debug(f"更新买家昵称失败: {self._safe_str(e)}")
 
+    def _build_cs_outbound_signature(
+        self,
+        chat_id: str,
+        message_type: str,
+        content: str = '',
+        image_url: str = ''
+    ) -> str:
+        normalized_chat_id = self._normalize_chat_id(chat_id)
+        normalized_message_type = message_type if message_type in ('text', 'image', 'system') else 'text'
+        normalized_content = str(content or '').strip()
+        normalized_image_url = str(image_url or '').strip()
+        return f"{normalized_chat_id}|{normalized_message_type}|{normalized_content}|{normalized_image_url}"
+
+    def _prune_cs_outbound_signatures(self, now_ms: int):
+        expire_before = now_ms - self.cs_outbound_signature_ttl_ms
+        expired_keys = [
+            signature for signature, timestamp in self.cs_outbound_recent_signatures.items()
+            if int(timestamp) < expire_before
+        ]
+        for signature in expired_keys:
+            self.cs_outbound_recent_signatures.pop(signature, None)
+
+        if len(self.cs_outbound_recent_signatures) <= self.cs_outbound_signature_max_size:
+            return
+
+        overflow = len(self.cs_outbound_recent_signatures) - self.cs_outbound_signature_max_size
+        oldest_signatures = sorted(
+            self.cs_outbound_recent_signatures.items(),
+            key=lambda item: int(item[1])
+        )[:overflow]
+        for signature, _ in oldest_signatures:
+            self.cs_outbound_recent_signatures.pop(signature, None)
+
+    def _mark_cs_outbound_signature(self, signature: str, message_time_ms: int = None):
+        if not signature:
+            return
+        now_ms = int(time.time() * 1000)
+        self._prune_cs_outbound_signatures(now_ms)
+        self.cs_outbound_recent_signatures[signature] = int(message_time_ms or now_ms)
+
+    def _is_cs_outbound_duplicate(self, signature: str, message_time_ms: int = None) -> bool:
+        if not signature:
+            return False
+        now_ms = int(time.time() * 1000)
+        self._prune_cs_outbound_signatures(now_ms)
+        recorded_time = self.cs_outbound_recent_signatures.get(signature)
+        if recorded_time is None:
+            return False
+        observed_time = int(message_time_ms or now_ms)
+        return abs(observed_time - int(recorded_time)) <= self.cs_outbound_dedupe_window_ms
+
+    def _get_recent_cs_peer_by_chat(self, chat_id: str):
+        normalized_chat_id = self._normalize_chat_id(chat_id)
+        if not normalized_chat_id or self.user_id is None:
+            return "", ""
+
+        try:
+            recent_messages = db_manager.get_customer_service_messages(
+                user_id=self.user_id,
+                cookie_id=self.cookie_id,
+                chat_id=normalized_chat_id,
+                limit=30
+            )
+            for message in recent_messages:
+                peer_user_id = str(message.get('peer_user_id') or '').split('@')[0].strip()
+                if not peer_user_id or peer_user_id == self.myid:
+                    continue
+                peer_user_name = str(message.get('peer_user_name') or '').strip()
+                return peer_user_id, peer_user_name
+        except Exception as e:
+            logger.debug(f"【{self.cookie_id}】按chat_id查询最近对端用户失败: {self._safe_str(e)}")
+
+        return "", ""
+
     def _record_customer_service_message(
         self,
         chat_id: str,
@@ -6796,7 +6876,7 @@ Cookie数量: {cookie_count}
     ):
         """记录客服台消息（容错，不影响主流程）"""
         try:
-            db_manager.add_customer_service_message(
+            return db_manager.add_customer_service_message(
                 cookie_id=self.cookie_id,
                 chat_id=self._normalize_chat_id(chat_id),
                 peer_user_id=str(peer_user_id or '').split('@')[0],
@@ -6811,6 +6891,7 @@ Cookie数量: {cookie_count}
             )
         except Exception as e:
             logger.debug(f"【{self.cookie_id}】记录客服台消息失败: {self._safe_str(e)}")
+            return False
 
     async def send_msg(self, ws, cid, toid, text, peer_name: str = ''):
         text_content = '' if text is None else str(text)
@@ -6861,15 +6942,23 @@ Cookie数量: {cookie_count}
             ]
         }
         await ws.send(json.dumps(msg))
-        self._record_customer_service_message(
+        send_time_ms = int(time.time() * 1000)
+        record_success = self._record_customer_service_message(
             chat_id=normalized_cid,
             peer_user_id=toid_clean,
             peer_user_name=peer_name or '',
             direction='out',
             message_type='text',
             content=text_content,
-            message_time=int(time.time() * 1000)
+            message_time=send_time_ms
         )
+        if record_success:
+            signature = self._build_cs_outbound_signature(
+                chat_id=normalized_cid,
+                message_type='text',
+                content=text_content
+            )
+            self._mark_cs_outbound_signature(signature, send_time_ms)
 
     async def init(self, ws):
         # 如果没有token或者token过期，获取新token
@@ -9349,6 +9438,33 @@ Cookie数量: {cookie_count}
             if send_user_id == self.myid:
                 logger.info(f"[{msg_time}] 【{self.cookie_id}】[{msg_id}] 【手动发出】 商品({item_id}): {send_message}")
 
+                if message_type != 'system':
+                    outbound_content = send_message or ('[图片]' if message_type == 'image' else '')
+                    outbound_signature = self._build_cs_outbound_signature(
+                        chat_id=chat_id,
+                        message_type=message_type,
+                        content=outbound_content,
+                        image_url=message_image_url
+                    )
+                    if self._is_cs_outbound_duplicate(outbound_signature, create_time):
+                        logger.debug(f"【{self.cookie_id}】[{msg_id}] 检测到客服台出站回显，跳过重复写入")
+                    else:
+                        peer_user_id, peer_user_name = self._get_recent_cs_peer_by_chat(chat_id)
+                        record_success = self._record_customer_service_message(
+                            chat_id=chat_id,
+                            peer_user_id=peer_user_id,
+                            peer_user_name=peer_user_name,
+                            direction='out',
+                            message_type=message_type,
+                            content=outbound_content,
+                            image_url=message_image_url,
+                            item_id=item_id,
+                            order_id=order_id or '',
+                            message_time=create_time
+                        )
+                        if record_success:
+                            self._mark_cs_outbound_signature(outbound_signature, create_time)
+
                 # 暂停该chat_id的自动回复10分钟
                 pause_manager.pause_chat(chat_id, self.cookie_id)
 
@@ -10439,7 +10555,8 @@ Cookie数量: {cookie_count}
 
             await ws.send(json.dumps(msg))
             logger.info(f"【{self.cookie_id}】图片消息发送成功: {image_url}")
-            self._record_customer_service_message(
+            send_time_ms = int(time.time() * 1000)
+            record_success = self._record_customer_service_message(
                 chat_id=normalized_cid,
                 peer_user_id=toid_clean,
                 peer_user_name=peer_name or '',
@@ -10447,8 +10564,16 @@ Cookie数量: {cookie_count}
                 message_type='image',
                 content='[图片]',
                 image_url=image_url,
-                message_time=int(time.time() * 1000)
+                message_time=send_time_ms
             )
+            if record_success:
+                signature = self._build_cs_outbound_signature(
+                    chat_id=normalized_cid,
+                    message_type='image',
+                    content='[图片]',
+                    image_url=image_url
+                )
+                self._mark_cs_outbound_signature(signature, send_time_ms)
 
         except Exception as e:
             logger.error(f"【{self.cookie_id}】发送图片消息失败: {self._safe_str(e)}")

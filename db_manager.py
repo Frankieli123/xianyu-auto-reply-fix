@@ -556,6 +556,14 @@ class DBManager:
             CREATE INDEX IF NOT EXISTS idx_cs_messages_user_runtime
             ON customer_service_messages(user_id, runtime_id)
             ''')
+            cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_cs_messages_user_conv_time
+            ON customer_service_messages(user_id, cookie_id, chat_id, message_time, id)
+            ''')
+            cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_cs_messages_user_time
+            ON customer_service_messages(user_id, message_time, id)
+            ''')
 
             # 客服台发送审计日志表
             cursor.execute('''
@@ -1669,16 +1677,13 @@ Cookie数量: {cookie_count}
             raise
 
     def _initialize_customer_service_runtime(self):
-        """初始化客服台运行期（仅保留当前运行期消息）"""
+        """初始化客服台消息运行配置（持久化模式不清空历史消息）。"""
         with self.lock:
             try:
-                cursor = self.conn.cursor()
-                self._execute_sql(cursor, "DELETE FROM customer_service_messages")
-                self.conn.commit()
                 logger.info(
-                    f"客服台运行期初始化完成: runtime_id={self.customer_service_runtime_id}, "
+                    f"客服台持久化模式已启用: runtime_id={self.customer_service_runtime_id}, "
                     f"每会话上限={self.customer_service_per_session_limit}, "
-                    f"全局上限={self.customer_service_global_limit}"
+                    f"全局上限={self.customer_service_global_limit}（按用户）"
                 )
             except Exception as e:
                 logger.error(f"客服台运行期初始化失败: {e}")
@@ -1760,17 +1765,17 @@ Cookie数量: {cookie_count}
             return ''
         return chat_id.split('@')[0]
 
-    def _trim_customer_service_messages(self, cursor, runtime_id: str, cookie_id: str, chat_id: str):
-        """执行客服台消息保留策略：每会话200条、全局2万条"""
+    def _trim_customer_service_messages(self, cursor, user_id: int, cookie_id: str, chat_id: str):
+        """执行客服台消息保留策略：每会话200条、每用户全局2万条。"""
         # 每会话限制
         self._execute_sql(
             cursor,
             '''
             SELECT COUNT(1)
             FROM customer_service_messages
-            WHERE runtime_id = ? AND cookie_id = ? AND chat_id = ?
+            WHERE user_id = ? AND cookie_id = ? AND chat_id = ?
             ''',
-            (runtime_id, cookie_id, chat_id)
+            (user_id, cookie_id, chat_id)
         )
         per_count = cursor.fetchone()[0] or 0
         if per_count > self.customer_service_per_session_limit:
@@ -1782,23 +1787,23 @@ Cookie数量: {cookie_count}
                 WHERE id IN (
                     SELECT id
                     FROM customer_service_messages
-                    WHERE runtime_id = ? AND cookie_id = ? AND chat_id = ?
+                    WHERE user_id = ? AND cookie_id = ? AND chat_id = ?
                     ORDER BY message_time ASC, id ASC
                     LIMIT ?
                 )
                 ''',
-                (runtime_id, cookie_id, chat_id, excess)
+                (user_id, cookie_id, chat_id, excess)
             )
 
-        # 全局限制
+        # 按用户全局限制
         self._execute_sql(
             cursor,
             '''
             SELECT COUNT(1)
             FROM customer_service_messages
-            WHERE runtime_id = ?
+            WHERE user_id = ?
             ''',
-            (runtime_id,)
+            (user_id,)
         )
         total_count = cursor.fetchone()[0] or 0
         if total_count > self.customer_service_global_limit:
@@ -1810,12 +1815,12 @@ Cookie数量: {cookie_count}
                 WHERE id IN (
                     SELECT id
                     FROM customer_service_messages
-                    WHERE runtime_id = ?
+                    WHERE user_id = ?
                     ORDER BY message_time ASC, id ASC
                     LIMIT ?
                 )
                 ''',
-                (runtime_id, excess)
+                (user_id, excess)
             )
 
     def add_customer_service_message(
@@ -1832,7 +1837,7 @@ Cookie数量: {cookie_count}
         order_id: str = '',
         message_time: Optional[int] = None
     ) -> bool:
-        """写入客服台运行期消息并执行容量淘汰"""
+        """写入客服台消息（持久化）并执行容量淘汰。"""
         normalized_chat_id = self._normalize_chat_id(chat_id)
         if not cookie_id or not normalized_chat_id:
             return False
@@ -1877,7 +1882,7 @@ Cookie数量: {cookie_count}
 
                 self._trim_customer_service_messages(
                     cursor,
-                    self.customer_service_runtime_id,
+                    user_id,
                     str(cookie_id).strip(),
                     normalized_chat_id
                 )
@@ -1898,9 +1903,9 @@ Cookie数量: {cookie_count}
                     SELECT COUNT(1) AS total_messages,
                            COUNT(DISTINCT cookie_id || ':' || chat_id) AS total_conversations
                     FROM customer_service_messages
-                    WHERE runtime_id = ? AND user_id = ?
+                    WHERE user_id = ?
                     ''',
-                    (self.customer_service_runtime_id, user_id)
+                    (user_id,)
                 )
                 row = cursor.fetchone()
                 return {
@@ -1940,8 +1945,7 @@ Cookie数量: {cookie_count}
                             (
                                 SELECT x.id
                                 FROM customer_service_messages x
-                                WHERE x.runtime_id = ?
-                                  AND x.user_id = ?
+                                WHERE x.user_id = ?
                                   AND x.cookie_id = grouped.cookie_id
                                   AND x.chat_id = grouped.chat_id
                                 ORDER BY x.message_time DESC, x.id DESC
@@ -1950,7 +1954,7 @@ Cookie数量: {cookie_count}
                         FROM (
                             SELECT cookie_id, chat_id, COUNT(1) AS message_count
                             FROM customer_service_messages
-                            WHERE runtime_id = ? AND user_id = ?
+                            WHERE user_id = ?
                             GROUP BY cookie_id, chat_id
                         ) grouped
                     ) c
@@ -1958,9 +1962,7 @@ Cookie数量: {cookie_count}
                     ORDER BY m.message_time DESC, m.id DESC
                     ''',
                     (
-                        self.customer_service_runtime_id,
                         user_id,
-                        self.customer_service_runtime_id,
                         user_id
                     )
                 )
@@ -2018,11 +2020,11 @@ Cookie数量: {cookie_count}
                     SELECT id, direction, message_type, content, image_url,
                            peer_user_id, peer_user_name, item_id, order_id, message_time
                     FROM customer_service_messages
-                    WHERE runtime_id = ? AND user_id = ? AND cookie_id = ? AND chat_id = ?
+                    WHERE user_id = ? AND cookie_id = ? AND chat_id = ?
                     ORDER BY message_time DESC, id DESC
                     LIMIT ?
                     ''',
-                    (self.customer_service_runtime_id, user_id, cookie_id, normalized_chat_id, safe_limit)
+                    (user_id, cookie_id, normalized_chat_id, safe_limit)
                 )
                 rows = cursor.fetchall()
                 rows.reverse()
@@ -2058,15 +2060,14 @@ Cookie数量: {cookie_count}
                     '''
                     SELECT peer_user_name
                     FROM customer_service_messages
-                    WHERE runtime_id = ?
-                      AND cookie_id = ?
+                    WHERE cookie_id = ?
                       AND peer_user_id = ?
                       AND peer_user_name IS NOT NULL
                       AND TRIM(peer_user_name) <> ''
                     ORDER BY message_time DESC, id DESC
                     LIMIT 1
                     ''',
-                    (self.customer_service_runtime_id, cookie_id, normalized_peer_id)
+                    (cookie_id, normalized_peer_id)
                 )
                 row = cursor.fetchone()
                 if not row:
