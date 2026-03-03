@@ -1516,6 +1516,31 @@ class XianyuLive:
         else:
             logger.warning(f"【{self.cookie_id}】订单状态处理器为None，跳过自动发货状态更新: {order_id}")
 
+    def _record_delivery_log(self, order_id: str = None, item_id: str = None, buyer_id: str = None,
+                             buyer_nick: str = None, status: str = 'failed', reason: str = None,
+                             channel: str = 'auto', rule_meta: dict = None):
+        """记录真实发货事件日志（成功/失败）。"""
+        try:
+            from db_manager import db_manager
+            meta = rule_meta or {}
+            db_manager.create_delivery_log(
+                user_id=self.user_id,
+                cookie_id=self.cookie_id,
+                order_id=order_id,
+                item_id=item_id,
+                buyer_id=buyer_id,
+                buyer_nick=buyer_nick,
+                rule_id=meta.get('rule_id'),
+                rule_keyword=meta.get('rule_keyword'),
+                card_type=meta.get('card_type'),
+                match_mode=meta.get('match_mode'),
+                channel=channel or 'auto',
+                status='success' if str(status).lower() == 'success' else 'failed',
+                reason=reason
+            )
+        except Exception as log_e:
+            logger.error(f"【{self.cookie_id}】记录发货日志失败: {self._safe_str(log_e)}")
+
     async def _delayed_lock_release(self, lock_key: str, delay_minutes: int = 10):
         """
         延迟释放锁的异步任务
@@ -1826,7 +1851,7 @@ class XianyuLive:
         """处理简化结构消息的自动发货逻辑
         
         专门用于处理简化结构的发货通知消息（message['1']是字符串的情况）
-        先执行自动确认发货，只有确认成功后才执行自动发货内容发送
+        发货确认统一在 _auto_delivery 内执行，避免重复确认导致漏发
         
         Args:
             websocket: WebSocket连接
@@ -1847,21 +1872,53 @@ class XianyuLive:
                     item_info = db_manager.get_item_info(self.cookie_id, item_id)
                     if not item_info:
                         logger.warning(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] ❌ 商品 {item_id} 不属于当前账号，跳过自动发货')
+                        self._record_delivery_log(
+                            order_id=order_id,
+                            item_id=item_id,
+                            buyer_id=user_id,
+                            status='failed',
+                            reason='商品不属于当前账号，跳过自动发货',
+                            channel='auto'
+                        )
                         return
                     logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] ✅ 商品 {item_id} 归属验证通过')
                 except Exception as e:
                     logger.error(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 检查商品归属失败: {self._safe_str(e)}，跳过自动发货')
+                    self._record_delivery_log(
+                        order_id=order_id,
+                        item_id=item_id,
+                        buyer_id=user_id,
+                        status='failed',
+                        reason=f'检查商品归属失败: {self._safe_str(e)}',
+                        channel='auto'
+                    )
                     return
             
             # 检查订单是否已发货
             if not self.can_auto_delivery(order_id):
                 logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 订单 {order_id} 在冷却期内，跳过发货')
+                self._record_delivery_log(
+                    order_id=order_id,
+                    item_id=item_id,
+                    buyer_id=user_id,
+                    status='failed',
+                    reason='订单在冷却期内，跳过发货',
+                    channel='auto'
+                )
                 return
             
             # 检查延迟锁状态
             lock_key = order_id
             if self.is_lock_held(lock_key):
                 logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 🔒 订单 {lock_key} 延迟锁仍在持有状态，跳过发货')
+                self._record_delivery_log(
+                    order_id=order_id,
+                    item_id=item_id,
+                    buyer_id=user_id,
+                    status='failed',
+                    reason='订单延迟锁持有中，跳过发货',
+                    channel='auto'
+                )
                 return
             
             # 获取订单锁
@@ -1874,74 +1931,41 @@ class XianyuLive:
                 # 再次检查延迟锁和冷却状态
                 if self.is_lock_held(lock_key) or not self.can_auto_delivery(order_id):
                     logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 获取锁后检查发现订单已处理，跳过发货')
+                    self._record_delivery_log(
+                        order_id=order_id,
+                        item_id=item_id,
+                        buyer_id=user_id,
+                        status='failed',
+                        reason='获取锁后发现订单已处理，跳过发货',
+                        channel='auto'
+                    )
                     return
-                
-                # 【关键】先执行自动确认发货
-                logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 📦 开始自动确认发货: order_id={order_id}')
-                confirm_result = await self.auto_confirm(order_id, item_id)
-                
-                if not confirm_result.get('success'):
-                    error_msg = confirm_result.get('error', '未知错误')
-                    logger.warning(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] ❌ 自动确认发货失败: {error_msg}，不执行自动发货')
-                    return
-                
-                logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] ✅ 自动确认发货成功，订单ID: {order_id}')
-                self.confirmed_orders[order_id] = time.time()
-                
-                # 确认发货成功后，执行自动发货内容发送
-                logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 📤 开始执行自动发货内容发送')
+
+                # 统一由 _auto_delivery 内部执行确认发货，避免重复确认导致漏发
+                logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 📤 开始执行自动发货内容发送（含统一确认发货）')
                 
                 # 获取商品标题
                 item_title = "待获取商品信息"
-
-                # 检查是否需要多数量发货
-                quantity_to_send = 1
-                multi_quantity_delivery = db_manager.get_item_multi_quantity_delivery_status(self.cookie_id, item_id)
-                if multi_quantity_delivery and order_id:
-                    logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 商品 {item_id} 开启了多数量发货，获取订单详情...')
-                    try:
-                        order_detail = await self.fetch_order_detail_info(
-                            order_id, item_id, user_id, trade_side='sell'
-                        )
-                        if order_detail and order_detail.get('quantity'):
-                            try:
-                                order_quantity = int(order_detail['quantity'])
-                                if order_quantity > 1:
-                                    quantity_to_send = order_quantity
-                                    logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 从订单详情获取数量: {order_quantity}，将发送 {quantity_to_send} 个卡券')
-                                else:
-                                    logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 订单数量为 {order_quantity}，发送单个卡券')
-                            except (ValueError, TypeError):
-                                logger.warning(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 订单数量格式无效: {order_detail.get("quantity")}，发送单个卡券')
-                        else:
-                            logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 未获取到订单数量信息，发送单个卡券')
-                    except Exception as e:
-                        logger.error(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 获取订单详情失败: {self._safe_str(e)}，发送单个卡券')
-                elif not multi_quantity_delivery:
-                    logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 商品 {item_id} 未开启多数量发货，发送单个卡券')
-
-                # 多次调用自动发货方法，每次获取不同发货内容
-                delivery_contents = []
-                for i in range(quantity_to_send):
-                    try:
-                        delivery_content = await self._auto_delivery(
-                            item_id,
-                            item_title,
-                            order_id,
-                            user_id,
-                            chat_id,
-                            trade_side='sell'
-                        )
-                        if delivery_content:
-                            delivery_contents.append(delivery_content)
-                            if quantity_to_send > 1:
-                                logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 第 {i+1}/{quantity_to_send} 个卡券内容获取成功')
-                        else:
-                            logger.warning(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 第 {i+1}/{quantity_to_send} 个卡券内容获取失败')
-                    except Exception as e:
-                        logger.error(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 第 {i+1}/{quantity_to_send} 个卡券获取异常: {self._safe_str(e)}')
-
-                if delivery_contents:
+                
+                # 调用自动发货方法获取发货内容
+                delivery_result = await self._auto_delivery(
+                    item_id, item_title, order_id, user_id, chat_id, include_meta=True, trade_side='sell'
+                )
+                if isinstance(delivery_result, dict):
+                    delivery_content = delivery_result.get('content')
+                    delivery_error = delivery_result.get('error')
+                    delivery_rule_meta = {
+                        'rule_id': delivery_result.get('rule_id'),
+                        'rule_keyword': delivery_result.get('rule_keyword'),
+                        'card_type': delivery_result.get('card_type'),
+                        'match_mode': delivery_result.get('match_mode')
+                    }
+                else:
+                    delivery_content = delivery_result
+                    delivery_error = None
+                    delivery_rule_meta = {}
+                
+                if delivery_content:
                     # 标记已发货
                     self.mark_delivery_sent(order_id)
                     
@@ -1957,9 +1981,9 @@ class XianyuLive:
                     
                     # 发送发货内容
                     user_url = f'https://www.goofish.com/personal?userId={user_id}'
-
-                    for i, delivery_content in enumerate(delivery_contents):
+                    try:
                         if delivery_content.startswith("__IMAGE_SEND__"):
+                            # 图片发送
                             image_data = delivery_content.replace("__IMAGE_SEND__", "")
                             if "|" in image_data:
                                 card_id_str, image_url = image_data.split("|", 1)
@@ -1972,32 +1996,54 @@ class XianyuLive:
                                 image_url = image_data
                             
                             await self.send_image_msg(websocket, chat_id, user_id, image_url, card_id=card_id)
-                            if len(delivery_contents) > 1:
-                                logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 【多数量自动发货图片】第 {i+1}/{len(delivery_contents)} 张已向 {user_url} 发送图片')
-                            else:
-                                logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 【自动发货图片】已向 {user_url} 发送图片')
+                            logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 【自动发货图片】已向 {user_url} 发送图片')
                         else:
+                            # 文本发送
                             await self.send_msg(websocket, chat_id, user_id, delivery_content)
-                            if len(delivery_contents) > 1:
-                                logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 【多数量自动发货】第 {i+1}/{len(delivery_contents)} 条已向 {user_url} 发送发货内容')
-                            else:
-                                logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 【自动发货】已向 {user_url} 发送发货内容')
+                            logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 【自动发货】已向 {user_url} 发送发货内容')
 
-                        if len(delivery_contents) > 1 and i < len(delivery_contents) - 1:
-                            await asyncio.sleep(1)
+                        self._record_delivery_log(
+                            order_id=order_id,
+                            item_id=item_id,
+                            buyer_id=user_id,
+                            status='success',
+                            reason='自动发货消息发送成功',
+                            channel='auto',
+                            rule_meta=delivery_rule_meta
+                        )
+                    except Exception as send_e:
+                        self._record_delivery_log(
+                            order_id=order_id,
+                            item_id=item_id,
+                            buyer_id=user_id,
+                            status='failed',
+                            reason=f'自动发货消息发送失败: {self._safe_str(send_e)}',
+                            channel='auto',
+                            rule_meta=delivery_rule_meta
+                        )
+                        raise
                     
                     # 发送成功通知
                     await self.send_delivery_failure_notification(
                         send_user_name="买家",
                         send_user_id=user_id,
                         item_id=item_id,
-                        error_message=f"多数量发货成功，共发送 {len(delivery_contents)} 个卡券" if len(delivery_contents) > 1 else "发货成功",
+                        error_message="发货成功",
                         chat_id=chat_id
                     )
                     
                     logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] ✅ 简化消息自动发货完成')
                 else:
                     logger.warning(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] ❌ 未找到匹配的发货规则或获取发货内容失败')
+                    self._record_delivery_log(
+                        order_id=order_id,
+                        item_id=item_id,
+                        buyer_id=user_id,
+                        status='failed',
+                        reason=delivery_error or '未找到匹配的发货规则或获取发货内容失败',
+                        channel='auto',
+                        rule_meta=delivery_rule_meta
+                    )
                     await self.send_delivery_failure_notification(
                         send_user_name="买家",
                         send_user_id=user_id,
@@ -2007,6 +2053,14 @@ class XianyuLive:
                     )
                     
         except Exception as e:
+            self._record_delivery_log(
+                order_id=order_id,
+                item_id=item_id,
+                buyer_id=user_id,
+                status='failed',
+                reason=f'简化消息自动发货异常: {self._safe_str(e)}',
+                channel='auto'
+            )
             logger.error(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 简化消息自动发货异常: {self._safe_str(e)}')
             import traceback
             logger.error(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 异常堆栈: {traceback.format_exc()}')
@@ -2019,29 +2073,175 @@ class XianyuLive:
             message_data: 原始的WebSocket消息数据，用于提取订单ID时的备用搜索
         """
         try:
+            from db_manager import db_manager
+
             # 检查商品是否属于当前cookies
             if item_id and item_id != "未知商品":
                 try:
-                    from db_manager import db_manager
                     item_info = db_manager.get_item_info(self.cookie_id, item_id)
                     if not item_info:
                         logger.warning(f'[{msg_time}] 【{self.cookie_id}】❌ 商品 {item_id} 不属于当前账号，跳过自动发货')
+                        self._record_delivery_log(
+                            item_id=item_id,
+                            buyer_id=send_user_id,
+                            buyer_nick=send_user_name,
+                            status='failed',
+                            reason='商品不属于当前账号，跳过自动发货',
+                            channel='auto'
+                        )
                         return
                     logger.warning(f'[{msg_time}] 【{self.cookie_id}】✅ 商品 {item_id} 归属验证通过')
                 except Exception as e:
                     logger.error(f'[{msg_time}] 【{self.cookie_id}】检查商品归属失败: {self._safe_str(e)}，跳过自动发货')
+                    self._record_delivery_log(
+                        item_id=item_id,
+                        buyer_id=send_user_id,
+                        buyer_nick=send_user_name,
+                        status='failed',
+                        reason=f'检查商品归属失败: {self._safe_str(e)}',
+                        channel='auto'
+                    )
                     return
 
             # 提取订单ID（传递原始消息数据以便在解密消息中找不到时进行备用搜索）
             order_id = self._extract_order_id(message, message_data)
             trade_side = self._extract_trade_side(message, message_data)
 
-            # 如果order_id不存在，直接返回
+            # 如果order_id不存在，尝试通过sid进行兜底查单
             if not order_id:
-                logger.warning(f'[{msg_time}] 【{self.cookie_id}】❌ 未能提取到订单ID，跳过自动发货')
-                return
+                fallback_sid = None
+                try:
+                    message_1 = message.get('1', {}) if isinstance(message, dict) else {}
+                    if isinstance(message_1, dict):
+                        # 优先使用会话字段
+                        fallback_sid = message_1.get('2', '')
+
+                        # 备用：从reminderUrl里解析sid
+                        if not fallback_sid:
+                            message_10 = message_1.get('10', {})
+                            if isinstance(message_10, dict):
+                                reminder_url = message_10.get('reminderUrl', '') or ''
+                                sid_match = re.search(r'[?&]sid=([^&]+)', reminder_url)
+                                if sid_match:
+                                    fallback_sid = sid_match.group(1)
+                except Exception as sid_e:
+                    logger.warning(f'[{msg_time}] 【{self.cookie_id}】解析sid失败: {self._safe_str(sid_e)}')
+
+                if fallback_sid:
+                    try:
+                        recent_order = db_manager.get_recent_order_by_sid(
+                            sid=fallback_sid,
+                            cookie_id=self.cookie_id,
+                            status='pending_ship',
+                            minutes=10
+                        )
+                    except Exception as sid_query_e:
+                        logger.error(f'[{msg_time}] 【{self.cookie_id}】sid兜底查单异常: {self._safe_str(sid_query_e)}')
+                        recent_order = None
+
+                    if recent_order:
+                        fallback_order_id = recent_order.get('order_id')
+                        fallback_item_id = recent_order.get('item_id')
+                        fallback_buyer_id = recent_order.get('buyer_id')
+
+                        # 防串单：买家不一致直接拒绝
+                        if send_user_id and fallback_buyer_id and str(send_user_id) != str(fallback_buyer_id):
+                            logger.warning(
+                                f'[{msg_time}] 【{self.cookie_id}】❌ sid兜底命中订单但买家不一致，已拒绝发货: '
+                                f'send_user_id={send_user_id}, order_buyer_id={fallback_buyer_id}, sid={fallback_sid}'
+                            )
+                            return
+
+                        # 防串单：商品不一致直接拒绝
+                        if item_id and item_id != "未知商品" and fallback_item_id and str(item_id) != str(fallback_item_id):
+                            logger.warning(
+                                f'[{msg_time}] 【{self.cookie_id}】❌ sid兜底命中订单但商品不一致，已拒绝发货: '
+                                f'message_item_id={item_id}, order_item_id={fallback_item_id}, sid={fallback_sid}'
+                            )
+                            return
+
+                        order_id = fallback_order_id
+                        if (not item_id or item_id == "未知商品") and fallback_item_id:
+                            item_id = fallback_item_id
+
+                        logger.info(
+                            f'[{msg_time}] 【{self.cookie_id}】✅ 订单ID提取失败，已通过sid兜底定位订单: '
+                            f'sid={fallback_sid}, order_id={order_id}, item_id={item_id}'
+                        )
+                    else:
+                        logger.warning(
+                            f'[{msg_time}] 【{self.cookie_id}】❌ 未能提取到订单ID，sid兜底也未命中待发货订单，跳过自动发货 '
+                            f'(sid={fallback_sid})'
+                        )
+                        self._record_delivery_log(
+                            item_id=item_id,
+                            buyer_id=send_user_id,
+                            buyer_nick=send_user_name,
+                            status='failed',
+                            reason=f'未能提取订单ID且sid未命中待发货订单: sid={fallback_sid}',
+                            channel='auto'
+                        )
+                        return
+                else:
+                    logger.warning(f'[{msg_time}] 【{self.cookie_id}】❌ 未能提取到订单ID且无可用sid，跳过自动发货')
+                    self._record_delivery_log(
+                        item_id=item_id,
+                        buyer_id=send_user_id,
+                        buyer_nick=send_user_name,
+                        status='failed',
+                        reason='未能提取到订单ID且无可用sid，跳过自动发货',
+                        channel='auto'
+                    )
+                    return
 
             # 订单ID已提取，将在自动发货时进行确认发货处理
+            # 防串单：对直接提取/兜底后的订单进行一致性校验
+            try:
+                existing_order = db_manager.get_order_by_id(order_id)
+            except Exception as order_check_e:
+                logger.error(f'[{msg_time}] 【{self.cookie_id}】查询订单一致性校验失败: {self._safe_str(order_check_e)}')
+                existing_order = None
+
+            if existing_order:
+                existing_buyer_id = existing_order.get('buyer_id')
+                existing_item_id = existing_order.get('item_id')
+
+                if send_user_id and existing_buyer_id and str(send_user_id) != str(existing_buyer_id):
+                    logger.warning(
+                        f'[{msg_time}] 【{self.cookie_id}】❌ 订单与当前会话买家不一致，拒绝自动发货: '
+                        f'order_id={order_id}, send_user_id={send_user_id}, order_buyer_id={existing_buyer_id}'
+                    )
+                    self._record_delivery_log(
+                        order_id=order_id,
+                        item_id=item_id,
+                        buyer_id=send_user_id,
+                        buyer_nick=send_user_name,
+                        status='failed',
+                        reason='订单与当前会话买家不一致，拒绝自动发货',
+                        channel='auto'
+                    )
+                    return
+
+                if item_id and item_id != "未知商品" and existing_item_id and str(item_id) != str(existing_item_id):
+                    logger.warning(
+                        f'[{msg_time}] 【{self.cookie_id}】❌ 订单与当前会话商品不一致，拒绝自动发货: '
+                        f'order_id={order_id}, message_item_id={item_id}, order_item_id={existing_item_id}'
+                    )
+                    self._record_delivery_log(
+                        order_id=order_id,
+                        item_id=item_id,
+                        buyer_id=send_user_id,
+                        buyer_nick=send_user_name,
+                        status='failed',
+                        reason='订单与当前会话商品不一致，拒绝自动发货',
+                        channel='auto'
+                    )
+                    return
+
+                if (not item_id or item_id == "未知商品") and existing_item_id:
+                    item_id = existing_item_id
+                    logger.info(f'[{msg_time}] 【{self.cookie_id}】订单一致性校验补全商品ID: {item_id}')
+
             logger.info(f'[{msg_time}] 【{self.cookie_id}】提取到订单ID: {order_id}，将在自动发货时处理确认发货')
 
             # 使用订单ID作为锁的键
@@ -2050,11 +2250,29 @@ class XianyuLive:
             # 第一重检查：延迟锁状态（在获取锁之前检查，避免不必要的等待）
             if self.is_lock_held(lock_key):
                 logger.info(f'[{msg_time}] 【{self.cookie_id}】🔒【提前检查】订单 {lock_key} 延迟锁仍在持有状态，跳过发货')
+                self._record_delivery_log(
+                    order_id=order_id,
+                    item_id=item_id,
+                    buyer_id=send_user_id,
+                    buyer_nick=send_user_name,
+                    status='failed',
+                    reason='订单延迟锁持有中，跳过发货',
+                    channel='auto'
+                )
                 return
 
             # 第二重检查：基于时间的冷却机制
             if not self.can_auto_delivery(order_id):
                 logger.info(f'[{msg_time}] 【{self.cookie_id}】订单 {order_id} 在冷却期内，跳过发货')
+                self._record_delivery_log(
+                    order_id=order_id,
+                    item_id=item_id,
+                    buyer_id=send_user_id,
+                    buyer_nick=send_user_name,
+                    status='failed',
+                    reason='订单在冷却期内，跳过发货',
+                    channel='auto'
+                )
                 return
 
             # 获取或创建该订单的锁
@@ -2070,11 +2288,29 @@ class XianyuLive:
                 # 第三重检查：获取锁后再次检查延迟锁状态（双重检查，防止在等待锁期间状态发生变化）
                 if self.is_lock_held(lock_key):
                     logger.info(f'[{msg_time}] 【{self.cookie_id}】订单 {lock_key} 在获取锁后检查发现延迟锁仍持有，跳过发货')
+                    self._record_delivery_log(
+                        order_id=order_id,
+                        item_id=item_id,
+                        buyer_id=send_user_id,
+                        buyer_nick=send_user_name,
+                        status='failed',
+                        reason='获取锁后发现延迟锁仍持有，跳过发货',
+                        channel='auto'
+                    )
                     return
 
                 # 第四重检查：获取锁后再次检查冷却状态
                 if not self.can_auto_delivery(order_id):
                     logger.info(f'[{msg_time}] 【{self.cookie_id}】订单 {order_id} 在获取锁后检查发现仍在冷却期，跳过发货')
+                    self._record_delivery_log(
+                        order_id=order_id,
+                        item_id=item_id,
+                        buyer_id=send_user_id,
+                        buyer_nick=send_user_name,
+                        status='failed',
+                        reason='获取锁后发现订单仍在冷却期，跳过发货',
+                        channel='auto'
+                    )
                     return
 
                 # 构造用户URL
@@ -2121,26 +2357,70 @@ class XianyuLive:
                         logger.info(f"无订单ID，发送单个卡券")
 
                     # 多次调用自动发货方法，每次获取不同的内容
-                    delivery_contents = []
-                    success_count = 0
+                    delivery_payloads = []
+                    last_delivery_error = None
 
                     for i in range(quantity_to_send):
                         try:
                             # 每次调用都可能获取不同的内容（API卡券、批量数据等）
-                            delivery_content = await self._auto_delivery(
-                                item_id, item_title, order_id, send_user_id, chat_id, send_user_name, trade_side=trade_side
+                            delivery_result = await self._auto_delivery(
+                                item_id,
+                                item_title,
+                                order_id,
+                                send_user_id,
+                                chat_id,
+                                send_user_name,
+                                include_meta=True,
+                                trade_side=trade_side
                             )
+                            if isinstance(delivery_result, dict):
+                                delivery_content = delivery_result.get('content')
+                                delivery_error = delivery_result.get('error')
+                                rule_meta = {
+                                    'rule_id': delivery_result.get('rule_id'),
+                                    'rule_keyword': delivery_result.get('rule_keyword'),
+                                    'card_type': delivery_result.get('card_type'),
+                                    'match_mode': delivery_result.get('match_mode')
+                                }
+                            else:
+                                delivery_content = delivery_result
+                                delivery_error = None
+                                rule_meta = {}
                             if delivery_content:
-                                delivery_contents.append(delivery_content)
-                                success_count += 1
+                                delivery_payloads.append({
+                                    'content': delivery_content,
+                                    'rule_meta': rule_meta
+                                })
                                 if quantity_to_send > 1:
                                     logger.info(f"第 {i+1}/{quantity_to_send} 个卡券内容获取成功")
                             else:
-                                logger.warning(f"第 {i+1}/{quantity_to_send} 个卡券内容获取失败")
+                                failure_reason = delivery_error or f"第 {i+1}/{quantity_to_send} 个卡券内容获取失败"
+                                last_delivery_error = failure_reason
+                                self._record_delivery_log(
+                                    order_id=order_id,
+                                    item_id=item_id,
+                                    buyer_id=send_user_id,
+                                    buyer_nick=send_user_name,
+                                    status='failed',
+                                    reason=failure_reason,
+                                    channel='auto',
+                                    rule_meta=rule_meta
+                                )
+                                logger.warning(failure_reason)
                         except Exception as e:
+                            last_delivery_error = f"第 {i+1}/{quantity_to_send} 个卡券获取异常: {self._safe_str(e)}"
+                            self._record_delivery_log(
+                                order_id=order_id,
+                                item_id=item_id,
+                                buyer_id=send_user_id,
+                                buyer_nick=send_user_name,
+                                status='failed',
+                                reason=last_delivery_error,
+                                channel='auto'
+                            )
                             logger.error(f"第 {i+1}/{quantity_to_send} 个卡券获取异常: {self._safe_str(e)}")
 
-                    if delivery_contents:
+                    if delivery_payloads:
                         # 标记已发货（防重复）- 基于订单ID
                         self.mark_delivery_sent(order_id)
 
@@ -2157,7 +2437,9 @@ class XianyuLive:
                         self._lock_hold_info[lock_key]['task'] = delay_task
 
                         # 发送所有获取到的发货内容
-                        for i, delivery_content in enumerate(delivery_contents):
+                        for i, payload in enumerate(delivery_payloads):
+                            delivery_content = payload.get('content', '')
+                            rule_meta = payload.get('rule_meta', {})
                             try:
                                 # 检查是否是图片发送标记
                                 if delivery_content.startswith("__IMAGE_SEND__"):
@@ -2177,41 +2459,91 @@ class XianyuLive:
 
                                     # 发送图片消息
                                     await self.send_image_msg(websocket, chat_id, send_user_id, image_url, card_id=card_id)
-                                    if len(delivery_contents) > 1:
-                                        logger.info(f'[{msg_time}] 【多数量自动发货图片】第 {i+1}/{len(delivery_contents)} 张已向 {user_url} 发送图片: {image_url}')
+                                    if len(delivery_payloads) > 1:
+                                        logger.info(f'[{msg_time}] 【多数量自动发货图片】第 {i+1}/{len(delivery_payloads)} 张已向 {user_url} 发送图片: {image_url}')
                                     else:
                                         logger.info(f'[{msg_time}] 【自动发货图片】已向 {user_url} 发送图片: {image_url}')
 
+                                    self._record_delivery_log(
+                                        order_id=order_id,
+                                        item_id=item_id,
+                                        buyer_id=send_user_id,
+                                        buyer_nick=send_user_name,
+                                        status='success',
+                                        reason='自动发货图片发送成功',
+                                        channel='auto',
+                                        rule_meta=rule_meta
+                                    )
+
                                     # 多数量发货时，消息间隔1秒
-                                    if len(delivery_contents) > 1 and i < len(delivery_contents) - 1:
+                                    if len(delivery_payloads) > 1 and i < len(delivery_payloads) - 1:
                                         await asyncio.sleep(1)
 
                                 else:
                                     # 普通文本发货内容
                                     await self.send_msg(websocket, chat_id, send_user_id, delivery_content)
-                                    if len(delivery_contents) > 1:
-                                        logger.info(f'[{msg_time}] 【多数量自动发货】第 {i+1}/{len(delivery_contents)} 条已向 {user_url} 发送发货内容')
+                                    if len(delivery_payloads) > 1:
+                                        logger.info(f'[{msg_time}] 【多数量自动发货】第 {i+1}/{len(delivery_payloads)} 条已向 {user_url} 发送发货内容')
                                     else:
                                         logger.info(f'[{msg_time}] 【自动发货】已向 {user_url} 发送发货内容')
 
+                                    self._record_delivery_log(
+                                        order_id=order_id,
+                                        item_id=item_id,
+                                        buyer_id=send_user_id,
+                                        buyer_nick=send_user_name,
+                                        status='success',
+                                        reason='自动发货文本发送成功',
+                                        channel='auto',
+                                        rule_meta=rule_meta
+                                    )
+
                                     # 多数量发货时，消息间隔1秒
-                                    if len(delivery_contents) > 1 and i < len(delivery_contents) - 1:
+                                    if len(delivery_payloads) > 1 and i < len(delivery_payloads) - 1:
                                         await asyncio.sleep(1)
 
                             except Exception as e:
+                                self._record_delivery_log(
+                                    order_id=order_id,
+                                    item_id=item_id,
+                                    buyer_id=send_user_id,
+                                    buyer_nick=send_user_name,
+                                    status='failed',
+                                    reason=f"发送第 {i+1} 条消息失败: {self._safe_str(e)}",
+                                    channel='auto',
+                                    rule_meta=rule_meta
+                                )
                                 logger.error(f"发送第 {i+1} 条消息失败: {self._safe_str(e)}")
 
                         # 发送成功通知
-                        if len(delivery_contents) > 1:
-                            await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, f"多数量发货成功，共发送 {len(delivery_contents)} 个卡券", chat_id)
+                        if len(delivery_payloads) > 1:
+                            await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, f"多数量发货成功，共发送 {len(delivery_payloads)} 个卡券", chat_id)
                         else:
                             await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, "发货成功", chat_id)
                     else:
                         logger.warning(f'[{msg_time}] 【自动发货】未找到匹配的发货规则或获取发货内容失败')
+                        self._record_delivery_log(
+                            order_id=order_id,
+                            item_id=item_id,
+                            buyer_id=send_user_id,
+                            buyer_nick=send_user_name,
+                            status='failed',
+                            reason=last_delivery_error or "未找到匹配的发货规则或获取发货内容失败",
+                            channel='auto'
+                        )
                         # 发送自动发货失败通知
                         await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, "未找到匹配的发货规则或获取发货内容失败", chat_id)
 
                 except Exception as e:
+                    self._record_delivery_log(
+                        order_id=order_id,
+                        item_id=item_id,
+                        buyer_id=send_user_id,
+                        buyer_nick=send_user_name,
+                        status='failed',
+                        reason=f"自动发货处理异常: {self._safe_str(e)}",
+                        channel='auto'
+                    )
                     logger.error(f"自动发货处理异常: {self._safe_str(e)}")
                     # 发送自动发货异常通知
                     await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, f"自动发货处理异常: {str(e)}", chat_id)
@@ -2219,6 +2551,14 @@ class XianyuLive:
                 logger.info(f'[{msg_time}] 【{self.cookie_id}】订单锁释放: {lock_key}，自动发货处理完成')
 
         except Exception as e:
+            self._record_delivery_log(
+                item_id=item_id,
+                buyer_id=send_user_id,
+                buyer_nick=send_user_name,
+                status='failed',
+                reason=f"统一自动发货处理异常: {self._safe_str(e)}",
+                channel='auto'
+            )
             logger.error(f"统一自动发货处理异常: {self._safe_str(e)}")
 
 
@@ -5800,9 +6140,24 @@ Cookie数量: {cookie_count}
                 logger.error(f"【{self.cookie_id}】获取订单详情异常: {self._safe_str(e)}")
                 return None
 
-    async def _auto_delivery(self, item_id: str, item_title: str = None, order_id: str = None, send_user_id: str = None, chat_id: str = None, send_user_name: str = None, trade_side: str = None):
+    async def _auto_delivery(self, item_id: str, item_title: str = None, order_id: str = None, send_user_id: str = None,
+                             chat_id: str = None, send_user_name: str = None, include_meta: bool = False,
+                             trade_side: str = None):
         """自动发货功能 - 获取卡券规则，执行延时，确认发货，发送内容"""
         try:
+            def build_result(success: bool, content: str = None, error: str = None, matched_rule: dict = None, match_mode_value: str = None):
+                if include_meta:
+                    return {
+                        "success": bool(success),
+                        "content": content if success else None,
+                        "error": error if not success else None,
+                        "rule_id": matched_rule.get('id') if matched_rule else None,
+                        "rule_keyword": matched_rule.get('keyword') if matched_rule else None,
+                        "card_type": matched_rule.get('card_type') if matched_rule else None,
+                        "match_mode": match_mode_value
+                    }
+                return content if success else None
+
             from db_manager import db_manager
 
             logger.info(f"开始自动发货检查: 商品ID={item_id}")
@@ -5901,6 +6256,7 @@ Cookie数量: {cookie_count}
             # 智能匹配发货规则：优先精确匹配，然后兜底匹配
             delivery_rules = []
             matched_by_item_id = False
+            used_exact_match = False
 
             # 第一步：优先按商品ID独立匹配（不和关键词组合）
             if item_id and item_id != "未知商品":
@@ -5948,6 +6304,7 @@ Cookie数量: {cookie_count}
 
                 if delivery_rules:
                     logger.info(f"✅ 找到精确匹配的多规格发货规则: {len(delivery_rules)}个")
+                    used_exact_match = True
                 else:
                     logger.info(f"❌ 未找到精确匹配的多规格发货规则")
 
@@ -5963,10 +6320,11 @@ Cookie数量: {cookie_count}
 
             if not delivery_rules:
                 logger.warning(f"未找到匹配的发货规则: {search_text[:50]}...")
-                return None
+                return build_result(False, error="未找到匹配的发货规则")
 
             # 使用第一个匹配的规则（按关键字长度降序排列，优先匹配更精确的规则）
             rule = delivery_rules[0]
+            match_mode = 'exact' if used_exact_match else 'fallback'
 
             if matched_by_item_id:
                 logger.info(f"🎯 当前规则由商品ID命中: item_id={item_id}, 规则ID={rule.get('id')}")
@@ -6047,8 +6405,9 @@ Cookie数量: {cookie_count}
                             self.confirmed_orders[order_id] = current_time
                             logger.info(f"🎉 自动确认发货成功！订单ID: {order_id}")
                         else:
-                            logger.warning(f"⚠️ 自动确认发货失败: {confirm_result.get('error', '未知错误')}")
-                            # 即使确认发货失败，也继续发送发货内容
+                            # 自动确认失败时必须中断，防止异常订单误发货
+                            logger.warning(f"❌ 自动确认发货失败，已阻断自动发货: {confirm_result.get('error', '未知错误')}")
+                            return build_result(False, error=f"自动确认发货失败: {confirm_result.get('error', '未知错误')}", matched_rule=rule, match_mode_value=match_mode)
 
             # 检查是否存在订单ID，只有存在订单ID才处理发货内容
             if order_id:
@@ -6141,18 +6500,18 @@ Cookie数量: {cookie_count}
                     # 增加发货次数统计
                     db_manager.increment_delivery_times(rule['id'])
                     logger.info(f"自动发货成功: 规则ID={rule['id']}, 内容长度={len(final_content)}")
-                    return final_content
+                    return build_result(True, content=final_content, matched_rule=rule, match_mode_value=match_mode)
                 else:
                     logger.warning(f"获取发货内容失败: 规则ID={rule['id']}")
-                    return None
+                    return build_result(False, error=f"获取发货内容失败: 规则ID={rule['id']}", matched_rule=rule, match_mode_value=match_mode)
             else:
                 # 没有订单ID，记录日志但不处理发货内容
                 logger.info(f"⚠️ 未检测到订单ID，跳过发货内容处理。规则: {rule['keyword']} -> {rule['card_name']} ({rule['card_type']})")
-                return None
+                return build_result(False, error="未检测到订单ID，跳过发货内容处理", matched_rule=rule, match_mode_value=match_mode)
 
         except Exception as e:
             logger.error(f"自动发货失败: {self._safe_str(e)}")
-            return None
+            return build_result(False, error=f"自动发货异常: {self._safe_str(e)}")
 
 
 
@@ -9404,7 +9763,7 @@ Cookie数量: {cookie_count}
                             recent_order = db_manager.get_recent_order_by_sid(
                                 sid=simple_sid,
                                 cookie_id=self.cookie_id,
-                                status='processing',  # 查找处理中状态的订单
+                                status='pending_ship',  # 只查找已付款待发货状态的订单
                                 minutes=10  # 最近10分钟内的订单
                             )
                             
@@ -9785,6 +10144,28 @@ Cookie数量: {cookie_count}
             # 简化消息通过 sid 查找订单，更可靠
             elif self._is_auto_delivery_trigger(send_message):
                 logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 检测到自动发货触发消息: {send_message}')
+
+                # 只允许系统消息触发自动发货，防止买家手动输入关键字触发
+                message_direction = message_1.get('7', 0) if isinstance(message_1, dict) else 0
+                content_type = 0
+                try:
+                    message_6 = message_1.get('6', {}) if isinstance(message_1, dict) else {}
+                    if isinstance(message_6, dict):
+                        message_6_3 = message_6.get('3', {})
+                        if isinstance(message_6_3, dict):
+                            content_type = message_6_3.get('4', 0)
+                except Exception:
+                    pass
+
+                is_system_message = message_direction == 1 or content_type == 6
+                if not is_system_message:
+                    logger.warning(
+                        f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] ⚠️ 自动发货关键字来自非系统消息，已忽略 '
+                        f'(direction={message_direction}, contentType={content_type})'
+                    )
+                    logger.info(f"【{self.cookie_id}】[{msg_id}] ⏹️ 处理结束（非系统触发）")
+                    return
+
                 # 检查是否启用自动确认发货
                 if not self.is_auto_confirm_enabled():
                     logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 未启用自动确认发货，跳过自动发货')
@@ -9795,16 +10176,16 @@ Cookie数量: {cookie_count}
                                                item_id, chat_id, msg_time, message_data)
                 logger.info(f"【{self.cookie_id}】[{msg_id}] ⏹️ 处理结束（自动发货完成）")
                 return
-            # 【重要】检查是否为"我已小刀，待刀成"卡片消息 - 即使在人工接入暂停期间也要处理
+            # 【重要】检查小刀流程卡片消息 - 即使在人工接入暂停期间也要处理
             elif send_message == '[卡片消息]':
-                # 检查是否为"我已小刀，待刀成"的卡片消息
+                # 检查是否为小刀相关卡片消息
                 try:
                     # 从消息中提取卡片内容
                     card_title = None
-                    if isinstance(message, dict) and "1" in message and isinstance(message["1"], dict):
-                        message_1 = message["1"]
-                        if "6" in message_1 and isinstance(message_1["6"], dict):
-                            message_6 = message_1["6"]
+                    card_message_1 = message.get("1", {}) if isinstance(message, dict) else {}
+                    if isinstance(card_message_1, dict):
+                        if "6" in card_message_1 and isinstance(card_message_1["6"], dict):
+                            message_6 = card_message_1["6"]
                             if "3" in message_6 and isinstance(message_6["3"], dict):
                                 message_6_3 = message_6["3"]
                                 if "5" in message_6_3:
@@ -9819,9 +10200,42 @@ Cookie数量: {cookie_count}
                                     except (json.JSONDecodeError, KeyError) as e:
                                         logger.warning(f"解析卡片消息失败: {e}")
 
-                    # 检查是否为"我已小刀，待刀成"
-                    if card_title == "我已小刀，待刀成":
-                        logger.info(f'[{msg_time}] 【{self.cookie_id}】【系统】检测到"我已小刀，待刀成"，即使在暂停期间也继续处理')
+                    # 卡片流程仅接受系统消息，避免伪造卡片触发
+                    card_message_direction = card_message_1.get('7', 0) if isinstance(card_message_1, dict) else 0
+                    card_content_type = 0
+                    card_is_system_biz = False
+                    try:
+                        card_message_6 = card_message_1.get('6', {}) if isinstance(card_message_1, dict) else {}
+                        if isinstance(card_message_6, dict):
+                            card_message_6_3 = card_message_6.get('3', {})
+                            if isinstance(card_message_6_3, dict):
+                                card_content_type = card_message_6_3.get('4', 0)
+                    except Exception:
+                        pass
+
+                    try:
+                        card_message_10 = card_message_1.get('10', {}) if isinstance(card_message_1, dict) else {}
+                        if isinstance(card_message_10, dict):
+                            biz_tag = card_message_10.get('bizTag', '')
+                            if biz_tag and ('SECURITY' in biz_tag or 'taskName' in biz_tag or 'taskId' in biz_tag):
+                                card_is_system_biz = True
+                    except Exception:
+                        pass
+
+                    is_system_card_message = card_message_direction == 1 or card_content_type == 6 or card_is_system_biz
+                    if not is_system_card_message:
+                        logger.warning(
+                            f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] ⚠️ 非系统卡片消息，忽略小刀流程 '
+                            f'(direction={card_message_direction}, contentType={card_content_type}, isSystemBiz={card_is_system_biz})'
+                        )
+                        return
+
+                    waiting_bargain_titles = {"我已小刀，待刀成", "我已小刀,待刀成"}
+                    ready_to_ship_titles = {"我已成功小刀，待发货", "我已成功小刀,待发货"}
+
+                    # 第一阶段：待刀成，仅执行免拼，不直接发货
+                    if card_title in waiting_bargain_titles:
+                        logger.info(f'[{msg_time}] 【{self.cookie_id}】【系统】检测到"{card_title}"，执行免拼流程')
                         
                         # 检查是否启用自动确认发货
                         if not self.is_auto_confirm_enabled():
@@ -9854,10 +10268,27 @@ Cookie数量: {cookie_count}
                         result = await self.auto_freeshipping(order_id, item_id, send_user_id)
                         if result.get('success'):
                             logger.info(f'[{msg_time}] 【{self.cookie_id}】✅ 自动免拼发货成功')
+                            logger.info(f'[{msg_time}] 【{self.cookie_id}】⏳ 已完成免拼，等待"我已成功小刀，待发货"卡片后再自动发货')
+                            return
                         else:
                             logger.warning(f'[{msg_time}] 【{self.cookie_id}】❌ 自动免拼发货失败: {result.get("error", "未知错误")}')
-                        await self._handle_auto_delivery(websocket, message, send_user_name, send_user_id,
-                                                       item_id, chat_id, msg_time, message_data)
+                            logger.info(f'[{msg_time}] 【{self.cookie_id}】⏹️ 免拼失败，不执行自动发货')
+                            return
+
+                    # 第二阶段：成功小刀待发货，触发自动发货
+                    elif card_title in ready_to_ship_titles:
+                        logger.info(f'[{msg_time}] 【{self.cookie_id}】【系统】检测到"{card_title}"，开始自动发货')
+
+                        # 检查是否启用自动确认发货
+                        if not self.is_auto_confirm_enabled():
+                            logger.info(f'[{msg_time}] 【{self.cookie_id}】未启用自动确认发货，跳过自动发货')
+                            return
+
+                        await self._handle_auto_delivery(
+                            websocket, message, send_user_name, send_user_id,
+                            item_id, chat_id, msg_time, message_data
+                        )
+                        logger.info(f'[{msg_time}] 【{self.cookie_id}】⏹️ 小刀成功待发货卡片处理完成')
                         return
                     else:
                         logger.info(f'[{msg_time}] 【{self.cookie_id}】收到卡片消息，标题: {card_title or "未知"}')

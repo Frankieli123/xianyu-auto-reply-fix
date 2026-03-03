@@ -6071,6 +6071,19 @@ def get_delivery_stats(current_user: Dict[str, Any] = Depends(get_current_user))
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/delivery-logs/recent")
+def get_recent_delivery_logs(limit: int = 20, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """获取最近发货日志（真实发货事件，含失败原因）"""
+    try:
+        from db_manager import db_manager
+        user_id = current_user['user_id']
+        safe_limit = max(1, min(int(limit), 200))
+        logs = db_manager.get_recent_delivery_logs(user_id=user_id, limit=safe_limit)
+        return {"logs": logs}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/delivery-rules")
 def create_delivery_rule(rule_data: dict, current_user: Dict[str, Any] = Depends(get_current_user)):
     """创建新发货规则"""
@@ -8619,19 +8632,53 @@ async def manual_deliver_order(order_id: str, current_user: Dict[str, Any] = Dep
         item_title = item_info.get('item_title', '') if item_info else ''
 
         # 调用自动发货逻辑获取发货内容
-        delivery_content = await xianyu_instance._auto_delivery(
+        delivery_result = await xianyu_instance._auto_delivery(
             item_id=item_id,
             item_title=item_title,
             order_id=order_id,
-            send_user_id=buyer_id
+            send_user_id=buyer_id,
+            include_meta=True
         )
 
-        if delivery_content:
+        # 兼容旧逻辑：如果不是dict，按字符串结果处理
+        if isinstance(delivery_result, dict):
+            delivery_content = delivery_result.get('content')
+            delivery_success = bool(delivery_result.get('success') and delivery_content)
+            rule_id = delivery_result.get('rule_id')
+            rule_keyword = delivery_result.get('rule_keyword')
+            card_type = delivery_result.get('card_type')
+            match_mode = delivery_result.get('match_mode')
+            failure_reason = delivery_result.get('error')
+        else:
+            delivery_content = delivery_result
+            delivery_success = bool(delivery_content)
+            rule_id = None
+            rule_keyword = None
+            card_type = None
+            match_mode = None
+            failure_reason = None
+
+        if delivery_success:
             # 发送发货内容给买家
             try:
                 if delivery_content.startswith("__IMAGE_SEND__"):
                     # 图片类型暂不支持手动发货
                     log_with_user('warning', f"手动发货: 订单 {order_id} 为图片类型，暂不支持手动发送", current_user)
+                    db_manager.create_delivery_log(
+                        user_id=user_id,
+                        cookie_id=cookie_id,
+                        order_id=order_id,
+                        item_id=item_id,
+                        buyer_id=buyer_id,
+                        buyer_nick=order.get('buyer_nick'),
+                        rule_id=rule_id,
+                        rule_keyword=rule_keyword,
+                        card_type=card_type,
+                        match_mode=match_mode,
+                        channel='manual',
+                        status='failed',
+                        reason='图片类型卡券暂不支持手动发货'
+                    )
                     return {"success": False, "delivered": False, "message": "图片类型卡券暂不支持手动发货"}
                 else:
                     # 使用现有的WebSocket连接发送消息（与自动发货逻辑一致）
@@ -8654,16 +8701,63 @@ async def manual_deliver_order(order_id: str, current_user: Dict[str, Any] = Dep
                         await xianyu_instance.send_msg_once(buyer_id, item_id, delivery_content)
                     log_with_user('info', f"手动发货消息已发送: 订单 {order_id}, 买家 {buyer_id}", current_user)
 
+                db_manager.create_delivery_log(
+                    user_id=user_id,
+                    cookie_id=cookie_id,
+                    order_id=order_id,
+                    item_id=item_id,
+                    buyer_id=buyer_id,
+                    buyer_nick=order.get('buyer_nick'),
+                    rule_id=rule_id,
+                    rule_keyword=rule_keyword,
+                    card_type=card_type,
+                    match_mode=match_mode,
+                    channel='manual',
+                    status='success',
+                    reason='手动发货消息发送成功'
+                )
+
                 # 更新订单状态为已发货
                 db_manager.insert_or_update_order(order_id=order_id, order_status='shipped')
                 log_with_user('info', f"手动发货成功: 订单 {order_id}", current_user)
                 return {"success": True, "delivered": True, "message": "发货成功，消息已发送给买家"}
             except Exception as send_error:
+                db_manager.create_delivery_log(
+                    user_id=user_id,
+                    cookie_id=cookie_id,
+                    order_id=order_id,
+                    item_id=item_id,
+                    buyer_id=buyer_id,
+                    buyer_nick=order.get('buyer_nick'),
+                    rule_id=rule_id,
+                    rule_keyword=rule_keyword,
+                    card_type=card_type,
+                    match_mode=match_mode,
+                    channel='manual',
+                    status='failed',
+                    reason=f"消息发送失败: {str(send_error)}"
+                )
                 log_with_user('error', f"手动发货发送消息失败: 订单 {order_id} - {str(send_error)}", current_user)
                 return {"success": False, "delivered": False, "message": f"获取发货内容成功但发送消息失败: {str(send_error)}"}
         else:
-            log_with_user('warning', f"手动发货失败: 订单 {order_id} - 未匹配到发货规则", current_user)
-            return {"success": False, "delivered": False, "message": "未匹配到发货规则，请检查卡券和发货规则配置"}
+            fail_reason = failure_reason or "未匹配到发货规则，请检查卡券和发货规则配置"
+            db_manager.create_delivery_log(
+                user_id=user_id,
+                cookie_id=cookie_id,
+                order_id=order_id,
+                item_id=item_id,
+                buyer_id=buyer_id,
+                buyer_nick=order.get('buyer_nick'),
+                rule_id=rule_id,
+                rule_keyword=rule_keyword,
+                card_type=card_type,
+                match_mode=match_mode,
+                channel='manual',
+                status='failed',
+                reason=fail_reason
+            )
+            log_with_user('warning', f"手动发货失败: 订单 {order_id} - {fail_reason}", current_user)
+            return {"success": False, "delivered": False, "message": fail_reason}
 
     except Exception as e:
         log_with_user('error', f"手动发货异常: 订单 {order_id} - {str(e)}", current_user)

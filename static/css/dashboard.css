@@ -382,3 +382,45 @@
     font-size: 0.7rem;
   }
 }
+
+.dashboard-half-panels .card {
+  min-height: 420px;
+}
+
+.dashboard-account-table td,
+.dashboard-account-table th,
+.dashboard-delivery-log-table td,
+.dashboard-delivery-log-table th {
+  text-align: center;
+  vertical-align: middle;
+}
+
+.dashboard-delivery-rule {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  margin: 0 auto;
+}
+
+.dashboard-delivery-reason {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-delivery-log-table td .d-flex {
+  justify-content: center;
+}
+
+@media (max-width: 1200px) {
+  .dashboard-half-panels .card {
+    min-height: auto;
+  }
+
+  .dashboard-delivery-reason {
+    max-width: 180px;
+  }
+}

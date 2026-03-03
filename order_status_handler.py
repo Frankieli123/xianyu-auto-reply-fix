@@ -672,17 +672,14 @@ class OrderStatusHandler:
             order_id = self.extract_order_id(message)
             if not order_id:
                 # 如果无法提取订单ID，根据配置决定是否添加到待处理队列
-                if self.config.get('use_pending_queue', True):
-                    logger.info(f'[{msg_time}] 【{cookie_id}】{send_message}，暂时无法提取订单ID，添加到待处理队列')
-                else:
+                if not self.config.get('use_pending_queue', True):
                     logger.error(f'[{msg_time}] 【{cookie_id}】{send_message}，无法提取订单ID且未启用待处理队列，跳过处理')
-                return False
+                    return False
+
+                logger.info(f'[{msg_time}] 【{cookie_id}】{send_message}，暂时无法提取订单ID，添加到待处理队列')
                 
                 # 创建一个临时的订单ID占位符，用于标识这个待处理的状态更新
                 temp_order_id = f"temp_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
-                
-                # 获取对应的状态
-                new_status = message_status_mapping[send_message]
                 
                 # 添加到待处理队列，使用特殊标记
                 self._add_to_pending_updates(
@@ -779,11 +776,11 @@ class OrderStatusHandler:
             order_id = self.extract_order_id(message)
             if not order_id:
                 # 如果无法提取订单ID，根据配置决定是否添加到待处理队列
-                if self.config.get('use_pending_queue', True):
-                    logger.info(f'[{msg_time}] 【{cookie_id}】交易关闭，暂时无法提取订单ID，添加到待处理队列')
-                else:
+                if not self.config.get('use_pending_queue', True):
                     logger.error(f'[{msg_time}] 【{cookie_id}】交易关闭，无法提取订单ID且未启用待处理队列，跳过处理')
-                return False
+                    return False
+
+                logger.info(f'[{msg_time}] 【{cookie_id}】交易关闭，暂时无法提取订单ID，添加到待处理队列')
                 
                 # 创建一个临时的订单ID占位符，用于标识这个待处理的状态更新
                 temp_order_id = f"temp_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"

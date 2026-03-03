@@ -79,6 +79,50 @@ class DBManager:
 
         self.init_db()
         self._initialize_customer_service_runtime()
+
+    def _normalize_order_status(self, status: str) -> str:
+        """标准化订单状态，统一为系统内部状态值。"""
+        if status is None:
+            return None
+
+        normalized = str(status).strip().lower()
+        if not normalized:
+            return None
+
+        status_map = {
+            # 内部标准状态
+            'processing': 'processing',
+            'pending_ship': 'pending_ship',
+            'shipped': 'shipped',
+            'completed': 'completed',
+            'refunding': 'refunding',
+            'refund_cancelled': 'refund_cancelled',
+            'cancelled': 'cancelled',
+            'unknown': 'unknown',
+            # 常见外部/历史状态兼容
+            'success': 'completed',
+            'closed': 'cancelled',
+            'canceled': 'cancelled',
+            'delivered': 'shipped',
+            # 中文状态兼容
+            '处理中': 'processing',
+            '待发货': 'pending_ship',
+            '已发货': 'shipped',
+            '已完成': 'completed',
+            '退款中': 'refunding',
+            '退款撤销': 'refund_cancelled',
+            '已关闭': 'cancelled',
+        }
+
+        mapped = status_map.get(normalized, normalized)
+        if mapped != normalized:
+            logger.info(f"标准化订单状态: {status} -> {mapped}")
+        elif normalized not in {
+            'processing', 'pending_ship', 'shipped', 'completed',
+            'refunding', 'refund_cancelled', 'cancelled', 'unknown'
+        }:
+            logger.warning(f"检测到未映射订单状态，按原值保存: {status}")
+        return mapped
     
     def init_db(self):
         """初始化数据库表结构"""
@@ -384,6 +428,32 @@ class DBManager:
                 FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE
             )
             ''')
+
+            # 创建发货日志表（记录真实发货尝试结果：成功/失败）
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS delivery_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                cookie_id TEXT,
+                order_id TEXT,
+                item_id TEXT,
+                buyer_id TEXT,
+                buyer_nick TEXT,
+                rule_id INTEGER,
+                rule_keyword TEXT,
+                card_type TEXT,
+                match_mode TEXT,
+                channel TEXT NOT NULL DEFAULT 'auto',
+                status TEXT NOT NULL DEFAULT 'failed',
+                reason TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE SET NULL,
+                FOREIGN KEY (rule_id) REFERENCES delivery_rules(id) ON DELETE SET NULL
+            )
+            ''')
+            self._execute_sql(cursor, "CREATE INDEX IF NOT EXISTS idx_delivery_logs_user_time ON delivery_logs(user_id, created_at)")
+            self._execute_sql(cursor, "CREATE INDEX IF NOT EXISTS idx_delivery_logs_order_id ON delivery_logs(order_id)")
 
             # 创建默认回复表
             cursor.execute('''
@@ -5439,6 +5509,81 @@ Cookie数量: {cookie_count}
                 logger.error(f"获取今日发货统计失败: {e}")
                 return 0
 
+    def create_delivery_log(self, user_id: int = None, cookie_id: str = None, order_id: str = None,
+                            item_id: str = None, buyer_id: str = None, buyer_nick: str = None,
+                            rule_id: int = None, rule_keyword: str = None, card_type: str = None,
+                            match_mode: str = None, channel: str = 'auto', status: str = 'failed',
+                            reason: str = None):
+        """记录一次真实发货尝试日志（成功/失败）。"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                INSERT INTO delivery_logs (
+                    user_id, cookie_id, order_id, item_id, buyer_id, buyer_nick,
+                    rule_id, rule_keyword, card_type, match_mode, channel, status, reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    user_id if user_id is not None else 1,
+                    cookie_id,
+                    order_id,
+                    item_id,
+                    buyer_id,
+                    buyer_nick,
+                    rule_id,
+                    rule_keyword,
+                    card_type,
+                    match_mode,
+                    (channel or 'auto'),
+                    (status or 'failed'),
+                    reason
+                ))
+                self.conn.commit()
+                return cursor.lastrowid
+            except Exception as e:
+                logger.error(f"记录发货日志失败: {e}")
+                self.conn.rollback()
+                return None
+
+    def get_recent_delivery_logs(self, user_id: int, limit: int = 20):
+        """获取最近发货日志（按用户隔离）。"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                safe_limit = max(1, min(int(limit), 200))
+                cursor.execute('''
+                SELECT id, user_id, cookie_id, order_id, item_id, buyer_id, buyer_nick,
+                       rule_id, rule_keyword, card_type, match_mode, channel, status, reason, created_at
+                FROM delivery_logs
+                WHERE user_id = ?
+                ORDER BY datetime(created_at) DESC, id DESC
+                LIMIT ?
+                ''', (user_id, safe_limit))
+
+                logs = []
+                for row in cursor.fetchall():
+                    logs.append({
+                        'id': row[0],
+                        'user_id': row[1],
+                        'cookie_id': row[2],
+                        'order_id': row[3],
+                        'item_id': row[4],
+                        'buyer_id': row[5],
+                        'buyer_nick': row[6],
+                        'rule_id': row[7],
+                        'rule_keyword': row[8],
+                        'card_type': row[9],
+                        'match_mode': row[10],
+                        'channel': row[11],
+                        'status': row[12],
+                        'reason': row[13],
+                        'created_at': row[14]
+                    })
+                return logs
+            except Exception as e:
+                logger.error(f"获取最近发货日志失败: {e}")
+                return []
+
     def get_delivery_rules_by_keyword_and_spec(self, keyword: str, spec_name: str = None, spec_value: str = None,
                                                spec_name_2: str = None, spec_value_2: str = None, user_id: int = None):
         """根据关键字和规格信息获取匹配的发货规则（支持双规格）
@@ -6717,6 +6862,7 @@ Cookie数量: {cookie_count}
         with self.lock:
             try:
                 cursor = self.conn.cursor()
+                normalized_order_status = self._normalize_order_status(order_status)
                 normalized_trade_side = None
                 if trade_side is not None:
                     side_text = str(trade_side).strip().lower()
@@ -6771,7 +6917,7 @@ Cookie数量: {cookie_count}
                         update_values.append(amount)
                     if order_status is not None:
                         update_fields.append("order_status = ?")
-                        update_values.append(order_status)
+                        update_values.append(normalized_order_status or 'unknown')
                     if normalized_trade_side is not None:
                         update_fields.append("trade_side = ?")
                         update_values.append(normalized_trade_side)
@@ -6794,7 +6940,7 @@ Cookie数量: {cookie_count}
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (order_id, item_id, buyer_id, buyer_nick, sid, spec_name, spec_value,
                           spec_name_2, spec_value_2, quantity, amount, normalized_trade_side or 'unknown',
-                          order_status or 'unknown', cookie_id))
+                          normalized_order_status or 'unknown', cookie_id))
                     logger.info(f"插入新订单: {order_id}")
 
                 self.conn.commit()
@@ -6918,12 +7064,12 @@ Cookie数量: {cookie_count}
                 # 更新该买家所有订单的昵称（允许覆盖已有值）
                 if cookie_id:
                     cursor.execute('''
-                    UPDATE orders SET buyer_nick = ?, updated_at = CURRENT_TIMESTAMP
+                    UPDATE orders SET buyer_nick = ?
                     WHERE buyer_id = ? AND cookie_id = ?
                     ''', (buyer_nick, buyer_id, cookie_id))
                 else:
                     cursor.execute('''
-                    UPDATE orders SET buyer_nick = ?, updated_at = CURRENT_TIMESTAMP
+                    UPDATE orders SET buyer_nick = ?
                     WHERE buyer_id = ?
                     ''', (buyer_nick, buyer_id))
 
@@ -7022,7 +7168,7 @@ Cookie数量: {cookie_count}
         Args:
             sid: 会话ID（如 56226853668@goofish 或 56226853668）
             cookie_id: Cookie ID（可选，用于限定账号）
-            status: 订单状态过滤（可选，如'processing'）
+            status: 订单状态过滤（可选，如'pending_ship'）
             minutes: 查询最近多少分钟内的订单，默认10分钟
         
         Returns:
@@ -7045,10 +7191,11 @@ Cookie数量: {cookie_count}
                     params.append(cookie_id)
                 
                 if status:
-                    conditions.append("order_status != 'shipped' ")
+                    conditions.append("order_status = ?")
+                    params.append(status)
                 
                 # 添加时间限制
-                conditions.append("datetime(created_at) >= datetime('now', ?)")
+                conditions.append("datetime(COALESCE(updated_at, created_at)) >= datetime('now', ?)")
                 params.append(f'-{minutes} minutes')
                 
                 where_clause = " AND ".join(conditions)
@@ -7059,7 +7206,7 @@ Cookie数量: {cookie_count}
                        trade_side
                 FROM orders
                 WHERE {where_clause}
-                ORDER BY created_at DESC
+                ORDER BY datetime(COALESCE(updated_at, created_at)) DESC
                 LIMIT 1
                 '''
 
@@ -7155,7 +7302,7 @@ Cookie数量: {cookie_count}
                     update_values.append(delivery_status)
                     # 同时更新order_status字段
                     update_fields.append("order_status = ?")
-                    update_values.append(delivery_status)
+                    update_values.append(self._normalize_order_status(delivery_status) or 'unknown')
                 
                 if callback_data is not None:
                     update_fields.append("callback_data = ?")

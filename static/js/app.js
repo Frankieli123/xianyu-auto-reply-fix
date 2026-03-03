@@ -451,6 +451,7 @@ async function loadDashboard() {
         renderVerticalTrendChart('profitTrendChart', data.profit_trend || [], 'profit', 'profit');
         renderProductRanking(data.product_rankings || []);
         renderAccountRanking(data.account_rankings || []);
+        await loadDashboardDeliveryLogs();
     } catch (error) {
         if (requestSeq !== dashboardRequestSeq) {
             return;
@@ -599,6 +600,95 @@ function renderRankingList(containerId, rows, options) {
             </div>
         `;
     }).join('');
+}
+
+async function loadDashboardDeliveryLogs() {
+    const tbody = document.getElementById('dashboardDeliveryLogsList');
+    if (!tbody) return;
+
+    try {
+        const response = await fetch(`${apiBase}/delivery-logs/recent?limit=20`, {
+            headers: {
+                'Authorization': `Bearer ${authToken}`
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+        const logs = Array.isArray(data.logs) ? data.logs : [];
+        renderDashboardDeliveryLogs(logs);
+    } catch (error) {
+        console.error('加载仪表盘发货日志失败:', error);
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="5" class="text-center text-muted py-4">
+                    <i class="bi bi-exclamation-triangle fs-4 d-block mb-2"></i>
+                    发货日志加载失败
+                </td>
+            </tr>
+        `;
+    }
+}
+
+function renderDashboardDeliveryLogs(logs) {
+    const tbody = document.getElementById('dashboardDeliveryLogsList');
+    if (!tbody) return;
+
+    tbody.innerHTML = '';
+
+    if (!logs.length) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="5" class="text-center text-muted py-4">
+                    <i class="bi bi-inbox fs-1 d-block mb-2"></i>
+                    暂无发货日志
+                </td>
+            </tr>
+        `;
+        return;
+    }
+
+    logs.forEach(log => {
+        const isSuccess = String(log.status || '').toLowerCase() === 'success';
+        const statusBadge = isSuccess
+            ? '<span class="badge bg-success">成功</span>'
+            : '<span class="badge bg-danger">失败</span>';
+
+        let matchBadge = '<span class="badge bg-secondary">未知</span>';
+        if (log.match_mode === 'exact') {
+            matchBadge = '<span class="badge bg-primary">精确</span>';
+        } else if (log.match_mode === 'fallback') {
+            matchBadge = '<span class="badge bg-warning text-dark">兜底</span>';
+        }
+
+        const ruleText = log.rule_keyword
+            ? `<div class="dashboard-delivery-rule" title="${escapeHtml(log.rule_keyword)}">${escapeHtml(log.rule_keyword)}</div>`
+            : '<span class="text-muted">未命中规则</span>';
+
+        const channelText = log.channel === 'manual' ? '手动' : '自动';
+        const reasonText = isSuccess
+            ? (log.reason || '发货成功')
+            : (log.reason || '未知失败原因');
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td class="text-nowrap"><small>${escapeHtml(formatDateTime(log.created_at || ''))}</small></td>
+            <td class="text-nowrap">${escapeHtml(log.order_id || '-')}</td>
+            <td>
+                ${ruleText}
+                <div class="mt-1 d-flex gap-1 align-items-center">
+                    ${matchBadge}
+                    <span class="badge bg-light text-dark border">${escapeHtml(channelText)}</span>
+                </div>
+            </td>
+            <td>${statusBadge}</td>
+            <td class="dashboard-delivery-reason" title="${escapeHtml(reasonText)}">${escapeHtml(reasonText)}</td>
+        `;
+        tbody.appendChild(tr);
+    });
 }
 
 // 获取账号关键词数量（带缓存）- 包含普通关键词和商品关键词
@@ -14909,7 +14999,7 @@ function exportSearchResults() {
 
 
 // 默认版本号（当无法读取 version.txt 时使用）
-const DEFAULT_VERSION = 'v1.3.1';
+const DEFAULT_VERSION = 'v1.3.2';
 
 // 当前本地版本号（动态从 version.txt 读取）
 let LOCAL_VERSION = DEFAULT_VERSION;
@@ -14922,9 +15012,23 @@ let remoteVersionInfo = null;
 
 // 本地版本历史（远程服务禁用时使用）
 const LOCAL_VERSION_HISTORY = {
-    version: 'v1.3.1',
+    version: 'v1.3.2',
     intro: '本系统仅供个人学习研究使用，请勿用于商业用途。如有问题或建议，欢迎反馈。',
     versionHistory: [
+        {
+            version: 'v1.3.2',
+            date: '2026-03-02',
+            updates: [
+                '【新功能】仪表盘新增发货日志面板，与账号详情5:5并排展示，支持查看最近发货事件',
+                '【新功能】新增发货日志接口 /delivery-logs/recent，支持按用户读取最近发货日志',
+                '【优化】自动发货与手动发货统一记录真实发货事件，包含规则关键词、匹配模式（精确/兜底）、渠道（自动/手动）与失败原因',
+                '【优化】新增 delivery_logs 数据表与索引，提升发货日志可追溯性与查询效率',
+                '【修复】自动确认发货失败后改为直接阻断发货，避免异常订单继续下发卡密',
+                '【修复】简化消息路径取消重复确认，统一由 _auto_delivery 执行一次确认，降低漏发风险',
+                '【修复】小刀流程调整为两阶段：待刀成仅免拼，成功小刀待发货才自动发货',
+                '【修复】自动发货关键字仅允许系统消息触发，并加强 sid 兜底订单一致性校验'
+            ]
+        },
         {
             version: 'v1.3.1',
             date: '2026-03-02',
