@@ -6012,23 +6012,48 @@ Cookie数量: {cookie_count}
                     logger.info(f"【{self.cookie_id}】🖥️ 启用有头模式进行调试")
 
                 # 异步获取订单详情（使用当前账号的cookie）
-                result = await fetch_order_detail_simple(order_id, cookie_string, headless=headless_mode, force_refresh=force_refresh)
+                result = await fetch_order_detail_simple(
+                    order_id,
+                    cookie_string,
+                    headless=headless_mode,
+                    force_refresh=force_refresh,
+                    cookie_id_for_log=self.cookie_id
+                )
 
                 if result:
                     logger.info(f"【{self.cookie_id}】订单详情获取成功: {order_id}")
                     logger.info(f"【{self.cookie_id}】页面标题: {result.get('title', '未知')}")
 
+                    def _normalize_optional_text(value):
+                        if value is None:
+                            return None
+                        text = str(value).strip()
+                        return text if text else None
+
+                    def _normalize_amount_text(value):
+                        text = _normalize_optional_text(value)
+                        if not text:
+                            return None
+                        # 避免将无数字的异常文本写入金额字段
+                        if not re.search(r'\d', text):
+                            return None
+                        return text
+
                     # 获取解析后的规格信息
-                    spec_name = result.get('spec_name', '')
-                    spec_value = result.get('spec_value', '')
-                    spec_name_2 = result.get('spec_name_2', '')
-                    spec_value_2 = result.get('spec_value_2', '')
-                    quantity = result.get('quantity', '')
-                    amount = result.get('amount', '')
+                    spec_name = _normalize_optional_text(result.get('spec_name'))
+                    spec_value = _normalize_optional_text(result.get('spec_value'))
+                    spec_name_2 = _normalize_optional_text(result.get('spec_name_2'))
+                    spec_value_2 = _normalize_optional_text(result.get('spec_value_2'))
+                    quantity = _normalize_optional_text(result.get('quantity'))
+                    amount = _normalize_amount_text(result.get('amount'))
                     # 获取订单状态（从闲鱼页面解析）
-                    order_status = result.get('order_status', '')
+                    raw_order_status = _normalize_optional_text(result.get('order_status'))
+                    # unknown 视为解析失败，不覆盖已有状态
+                    order_status = raw_order_status if raw_order_status and raw_order_status.lower() != 'unknown' else None
                     if order_status:
                         logger.info(f"【{self.cookie_id}】📊 订单状态: {order_status}")
+                    elif raw_order_status and raw_order_status.lower() == 'unknown':
+                        logger.warning(f"【{self.cookie_id}】订单状态解析为unknown，跳过状态字段写库")
 
                     if spec_name and spec_value:
                         logger.info(f"【{self.cookie_id}】📋 规格名称: {spec_name}")
@@ -6096,7 +6121,7 @@ Cookie数量: {cookie_count}
                                 amount=amount,
                                 cookie_id=self.cookie_id,
                                 trade_side=resolved_trade_side,
-                                order_status=order_status if order_status else None  # 传递从闲鱼获取的订单状态
+                                order_status=(order_status if order_status and str(order_status).lower() != 'unknown' else None)
                             )
                             
                             # 使用订单状态处理器设置状态

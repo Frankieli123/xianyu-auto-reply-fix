@@ -12390,7 +12390,7 @@ function createOrderRow(order) {
             </td>
             <td>${order.quantity || '-'}</td>
             <td>
-                <span class="text-success fw-bold">¥${order.amount || '0.00'}</span>
+                <span class="text-success fw-bold">${formatOrderAmountDisplay(order.amount)}</span>
             </td>
             <td>
                 <span class="badge ${statusClass}">${statusText}</span>
@@ -12626,7 +12626,7 @@ async function showOrderDetail(orderId) {
                                         <tr><td>规格2名称</td><td>${order.spec_name_2 || '无'}</td></tr>
                                         <tr><td>规格2值</td><td>${order.spec_value_2 || '无'}</td></tr>
                                         <tr><td>数量</td><td>${order.quantity || '1'}</td></tr>
-                                        <tr><td>金额</td><td>¥${order.amount || '0.00'}</td></tr>
+                                        <tr><td>金额</td><td>${formatOrderAmountDisplay(order.amount)}</td></tr>
                                     </table>
                                 </div>
                             </div>
@@ -14999,7 +14999,7 @@ function exportSearchResults() {
 
 
 // 默认版本号（当无法读取 version.txt 时使用）
-const DEFAULT_VERSION = 'v1.3.2';
+const DEFAULT_VERSION = 'v1.3.3';
 
 // 当前本地版本号（动态从 version.txt 读取）
 let LOCAL_VERSION = DEFAULT_VERSION;
@@ -15012,9 +15012,21 @@ let remoteVersionInfo = null;
 
 // 本地版本历史（远程服务禁用时使用）
 const LOCAL_VERSION_HISTORY = {
-    version: 'v1.3.2',
+    version: 'v1.3.3',
     intro: '本系统仅供个人学习研究使用，请勿用于商业用途。如有问题或建议，欢迎反馈。',
     versionHistory: [
+        {
+            version: 'v1.3.3',
+            date: '2026-03-03',
+            updates: [
+                '【优化】增强订单详情解析稳定性，新增刷新重试、文本兜底与金额多选择器提取，降低偶发规格/金额缺失',
+                '【优化】新增结构化解析日志 ORDER_DETAIL_PARSE_ALERT / ORDER_DETAIL_PARSE_RECOVERED，便于快速排查异常账号与订单',
+                '【优化】避免空值和 unknown 状态覆盖已有有效订单字段，减少后续发货链路受脏数据影响',
+                '【修复】SQL日志敏感参数统一脱敏（password/proxy_pass/smtp_password/admin_password_hash）',
+                '【修复】默认管理员初始化日志移除明文密码提示',
+                '【修复】订单金额前端显示优化，避免重复货币符号并统一空值显示'
+            ]
+        },
         {
             version: 'v1.3.2',
             date: '2026-03-02',

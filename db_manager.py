@@ -1162,7 +1162,7 @@ Cookie数量: {cookie_count}
                     INSERT INTO users (username, email, password_hash) VALUES
                     ('admin', 'admin@localhost', ?)
                     ''', (default_password_hash,))
-                logger.info("创建默认admin用户，密码: admin123")
+                logger.info("创建默认admin用户，默认密码已初始化，请尽快修改")
 
             # 获取admin用户ID，用于历史数据绑定
             self._execute_sql(cursor, "SELECT id FROM users WHERE username = 'admin'")
@@ -1793,10 +1793,22 @@ Cookie数量: {cookie_count}
         if not self.sql_log_enabled:
             return
 
+        # 格式化SQL（移除多余空白）
+        formatted_sql = ' '.join(sql.split())
+        sql_lower = formatted_sql.lower()
+        sensitive_keywords = ('password', 'proxy_pass', 'smtp_password', 'admin_password_hash')
+        contains_sensitive = any(keyword in sql_lower for keyword in sensitive_keywords)
+
         # 格式化参数
         params_str = ""
         if params:
-            if isinstance(params, (list, tuple)):
+            # 包含敏感字段的SQL统一脱敏参数，避免日志泄露密码等敏感信息
+            if contains_sensitive:
+                if isinstance(params, (list, tuple)):
+                    params_str = f" | 参数: [***敏感参数已脱敏，共{len(params)}项***]"
+                else:
+                    params_str = " | 参数: [***敏感参数已脱敏***]"
+            elif isinstance(params, (list, tuple)):
                 if len(params) > 0:
                     # 限制参数长度，避免日志过长
                     formatted_params = []
@@ -1806,9 +1818,8 @@ Cookie数量: {cookie_count}
                         else:
                             formatted_params.append(repr(param))
                     params_str = f" | 参数: [{', '.join(formatted_params)}]"
-
-        # 格式化SQL（移除多余空白）
-        formatted_sql = ' '.join(sql.split())
+            else:
+                params_str = f" | 参数: {repr(params)}"
 
         # 根据配置的日志级别输出
         log_message = f"🗄️ SQL {operation}: {formatted_sql}{params_str}"
