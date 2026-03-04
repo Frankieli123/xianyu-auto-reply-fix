@@ -619,7 +619,10 @@ class OrderDetailFetcher:
         ignore_tokens = [
             'http://', 'https://', 'fleamarket://', '订单', '买家', '卖家', '地址',
             '手机', '电话', '时间', '发货', '付款', '交易', '退款', '去发货', '修改价格',
-            '等待你发货', '等待买家', '已发货', '待收货', '待发货'
+            '等待你发货', '等待买家', '已发货', '待收货', '待发货',
+            '统一社会信用代码', '经营许可证', '许可证', '备案', '备案号', 'ICP备',
+            '增值电信', '广播电视', '营业性演出', '集邮市场', '网络食品', '隐私政策',
+            '服务协议', '公司信息', '平台规则', '投诉', '举报', '客服'
         ]
 
         for line in lines:
@@ -635,6 +638,20 @@ class OrderDetailFetcher:
             if not left or not right:
                 continue
             if len(left) > 16:
+                continue
+            if len(right) > 64:
+                continue
+
+            # 过滤日期时间误识别：如 "2026-03-04 21:33:50"
+            if re.search(r'(?:19|20)\d{2}[-/年]\d{1,2}[-/月]\d{1,2}', left) and re.fullmatch(r'\d{1,2}:\d{2}(?::\d{2})?', right):
+                continue
+
+            # 规格名至少应包含字母或中文，避免纯数字/时间片段被识别为规格名
+            if not re.search(r'[A-Za-z\u4e00-\u9fff]', left):
+                continue
+
+            # 过滤证照/长编码等明显非规格值
+            if re.search(r'[A-Za-z]{1,3}\d{5,}|\d{10,}', right):
                 continue
 
             parsed = self._parse_sku_content(f"{left}:{right}")
