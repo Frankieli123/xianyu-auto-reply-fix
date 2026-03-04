@@ -12157,6 +12157,23 @@ async function updateLoginInfoSettings() {
 // 订单管理功能
 // ================================
 
+function formatOrderAmountDisplay(rawAmount) {
+    if (rawAmount === undefined || rawAmount === null) {
+        return '-';
+    }
+
+    const amountText = String(rawAmount).trim();
+    if (!amountText) {
+        return '-';
+    }
+
+    if (/[¥￥$]/.test(amountText)) {
+        return amountText;
+    }
+
+    return `¥${amountText}`;
+}
+
 // 加载订单列表
 async function loadOrders() {
     try {
@@ -12296,10 +12313,10 @@ function filterOrders() {
     filteredOrdersData = allOrdersData.filter(order => {
         // 搜索关键词筛选（订单ID、商品ID、买家ID、买家昵称）
         const matchesSearch = !searchKeyword ||
-            (order.order_id && order.order_id.toLowerCase().includes(searchKeyword)) ||
-            (order.item_id && order.item_id.toLowerCase().includes(searchKeyword)) ||
-            (order.buyer_id && order.buyer_id.toLowerCase().includes(searchKeyword)) ||
-            (order.buyer_nick && order.buyer_nick.toLowerCase().includes(searchKeyword));
+            (order.order_id && String(order.order_id).toLowerCase().includes(searchKeyword)) ||
+            (order.item_id && String(order.item_id).toLowerCase().includes(searchKeyword)) ||
+            (order.buyer_id && String(order.buyer_id).toLowerCase().includes(searchKeyword)) ||
+            (order.buyer_nick && String(order.buyer_nick).toLowerCase().includes(searchKeyword));
 
         // 状态筛选
         const orderStatus = normalizeOrderStatus(order.order_status);
