@@ -2077,6 +2077,59 @@ Cookie数量: {cookie_count}
                 logger.error(f"获取客服台会话昵称失败: cookie_id={cookie_id}, peer_user_id={normalized_peer_id}, error={e}")
                 return ''
 
+    def get_latest_customer_service_peer_id(
+        self,
+        cookie_id: str,
+        chat_id: str = '',
+        order_id: str = '',
+        user_id: int = None
+    ) -> str:
+        """按会话或订单回查最近的对端用户ID（buyer_id候选）"""
+        safe_cookie_id = str(cookie_id or '').strip()
+        safe_chat_id = self._normalize_chat_id(chat_id)
+        safe_order_id = str(order_id or '').strip()
+        if not safe_cookie_id:
+            return ''
+
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                where_clauses = [
+                    "cookie_id = ?",
+                    "peer_user_id IS NOT NULL",
+                    "TRIM(peer_user_id) <> ''"
+                ]
+                params: List[Any] = [safe_cookie_id]
+
+                if user_id is not None:
+                    where_clauses.insert(0, "user_id = ?")
+                    params.insert(0, user_id)
+                if safe_chat_id:
+                    where_clauses.append("chat_id = ?")
+                    params.append(safe_chat_id)
+                if safe_order_id:
+                    where_clauses.append("order_id = ?")
+                    params.append(safe_order_id)
+
+                sql = f'''
+                SELECT peer_user_id
+                FROM customer_service_messages
+                WHERE {' AND '.join(where_clauses)}
+                ORDER BY message_time DESC, id DESC
+                LIMIT 1
+                '''
+                self._execute_sql(cursor, sql, tuple(params))
+                row = cursor.fetchone()
+                if not row:
+                    return ''
+                return str(row[0] or '').split('@')[0].strip()
+            except Exception as e:
+                logger.error(
+                    f"回查客服台对端用户ID失败: cookie_id={safe_cookie_id}, chat_id={safe_chat_id}, "
+                    f"order_id={safe_order_id}, user_id={user_id}, error={e}"
+                )
+                return ''
+
     def get_customer_service_order_info(
         self,
         user_id: int,

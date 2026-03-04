@@ -17525,6 +17525,15 @@ function renderCustomerServiceMessages(messages) {
     const container = document.getElementById('csMessageList');
     if (!container) return;
 
+    const scrollBottomThreshold = 24;
+    const previousScrollHeight = container.scrollHeight || 0;
+    const previousScrollTop = container.scrollTop || 0;
+    const previousClientHeight = container.clientHeight || 0;
+    const previousBottomOffset = Math.max(0, previousScrollHeight - previousScrollTop);
+    const wasNearBottom =
+        previousScrollHeight === 0 ||
+        (previousScrollHeight - (previousScrollTop + previousClientHeight)) <= scrollBottomThreshold;
+
     if (!messages || messages.length === 0) {
         container.innerHTML = `
             <div class="cs-empty-state">
@@ -17556,7 +17565,12 @@ function renderCustomerServiceMessages(messages) {
         `;
     }).join('');
 
-    container.scrollTop = container.scrollHeight;
+    if (wasNearBottom) {
+        container.scrollTop = container.scrollHeight;
+    } else {
+        const targetScrollTop = container.scrollHeight - previousBottomOffset;
+        container.scrollTop = Math.max(0, targetScrollTop);
+    }
 }
 
 function triggerCustomerServiceImageSelect() {

@@ -1876,24 +1876,62 @@ class XianyuLive:
                     return
                 
                 logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] ✅ 自动确认发货成功，订单ID: {order_id}')
+                self.confirmed_orders[order_id] = time.time()
                 
                 # 确认发货成功后，执行自动发货内容发送
                 logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 📤 开始执行自动发货内容发送')
                 
                 # 获取商品标题
                 item_title = "待获取商品信息"
-                
-                # 调用自动发货方法获取发货内容
-                delivery_content = await self._auto_delivery(
-                    item_id,
-                    item_title,
-                    order_id,
-                    user_id,
-                    chat_id,
-                    trade_side='sell'
-                )
-                
-                if delivery_content:
+
+                # 检查是否需要多数量发货
+                quantity_to_send = 1
+                multi_quantity_delivery = db_manager.get_item_multi_quantity_delivery_status(self.cookie_id, item_id)
+                if multi_quantity_delivery and order_id:
+                    logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 商品 {item_id} 开启了多数量发货，获取订单详情...')
+                    try:
+                        order_detail = await self.fetch_order_detail_info(
+                            order_id, item_id, user_id, trade_side='sell'
+                        )
+                        if order_detail and order_detail.get('quantity'):
+                            try:
+                                order_quantity = int(order_detail['quantity'])
+                                if order_quantity > 1:
+                                    quantity_to_send = order_quantity
+                                    logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 从订单详情获取数量: {order_quantity}，将发送 {quantity_to_send} 个卡券')
+                                else:
+                                    logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 订单数量为 {order_quantity}，发送单个卡券')
+                            except (ValueError, TypeError):
+                                logger.warning(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 订单数量格式无效: {order_detail.get("quantity")}，发送单个卡券')
+                        else:
+                            logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 未获取到订单数量信息，发送单个卡券')
+                    except Exception as e:
+                        logger.error(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 获取订单详情失败: {self._safe_str(e)}，发送单个卡券')
+                elif not multi_quantity_delivery:
+                    logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 商品 {item_id} 未开启多数量发货，发送单个卡券')
+
+                # 多次调用自动发货方法，每次获取不同发货内容
+                delivery_contents = []
+                for i in range(quantity_to_send):
+                    try:
+                        delivery_content = await self._auto_delivery(
+                            item_id,
+                            item_title,
+                            order_id,
+                            user_id,
+                            chat_id,
+                            trade_side='sell'
+                        )
+                        if delivery_content:
+                            delivery_contents.append(delivery_content)
+                            if quantity_to_send > 1:
+                                logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 第 {i+1}/{quantity_to_send} 个卡券内容获取成功')
+                        else:
+                            logger.warning(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 第 {i+1}/{quantity_to_send} 个卡券内容获取失败')
+                    except Exception as e:
+                        logger.error(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 第 {i+1}/{quantity_to_send} 个卡券获取异常: {self._safe_str(e)}')
+
+                if delivery_contents:
                     # 标记已发货
                     self.mark_delivery_sent(order_id)
                     
@@ -1909,33 +1947,41 @@ class XianyuLive:
                     
                     # 发送发货内容
                     user_url = f'https://www.goofish.com/personal?userId={user_id}'
-                    
-                    if delivery_content.startswith("__IMAGE_SEND__"):
-                        # 图片发送
-                        image_data = delivery_content.replace("__IMAGE_SEND__", "")
-                        if "|" in image_data:
-                            card_id_str, image_url = image_data.split("|", 1)
-                            try:
-                                card_id = int(card_id_str)
-                            except ValueError:
+
+                    for i, delivery_content in enumerate(delivery_contents):
+                        if delivery_content.startswith("__IMAGE_SEND__"):
+                            image_data = delivery_content.replace("__IMAGE_SEND__", "")
+                            if "|" in image_data:
+                                card_id_str, image_url = image_data.split("|", 1)
+                                try:
+                                    card_id = int(card_id_str)
+                                except ValueError:
+                                    card_id = None
+                            else:
                                 card_id = None
+                                image_url = image_data
+                            
+                            await self.send_image_msg(websocket, chat_id, user_id, image_url, card_id=card_id)
+                            if len(delivery_contents) > 1:
+                                logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 【多数量自动发货图片】第 {i+1}/{len(delivery_contents)} 张已向 {user_url} 发送图片')
+                            else:
+                                logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 【自动发货图片】已向 {user_url} 发送图片')
                         else:
-                            card_id = None
-                            image_url = image_data
-                        
-                        await self.send_image_msg(websocket, chat_id, user_id, image_url, card_id=card_id)
-                        logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 【自动发货图片】已向 {user_url} 发送图片')
-                    else:
-                        # 文本发送
-                        await self.send_msg(websocket, chat_id, user_id, delivery_content)
-                        logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 【自动发货】已向 {user_url} 发送发货内容')
+                            await self.send_msg(websocket, chat_id, user_id, delivery_content)
+                            if len(delivery_contents) > 1:
+                                logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 【多数量自动发货】第 {i+1}/{len(delivery_contents)} 条已向 {user_url} 发送发货内容')
+                            else:
+                                logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 【自动发货】已向 {user_url} 发送发货内容')
+
+                        if len(delivery_contents) > 1 and i < len(delivery_contents) - 1:
+                            await asyncio.sleep(1)
                     
                     # 发送成功通知
                     await self.send_delivery_failure_notification(
                         send_user_name="买家",
                         send_user_id=user_id,
                         item_id=item_id,
-                        error_message="发货成功",
+                        error_message=f"多数量发货成功，共发送 {len(delivery_contents)} 个卡券" if len(delivery_contents) > 1 else "发货成功",
                         chat_id=chat_id
                     )
                     
@@ -5649,9 +5695,33 @@ Cookie数量: {cookie_count}
 
                     # 插入或更新订单信息到数据库
                     try:
+                        sid_clean = self._normalize_chat_id(sid)
+                        resolved_buyer_id = str(buyer_id or '').split('@')[0].strip()
+                        if sid_clean and resolved_buyer_id == sid_clean:
+                            resolved_buyer_id = ''
+                        if resolved_buyer_id in ('', 'unknown_user', 'unknown'):
+                            recovered_buyer_id = ''
+                            if sid:
+                                recovered_buyer_id = db_manager.get_latest_customer_service_peer_id(
+                                    cookie_id=self.cookie_id,
+                                    chat_id=sid,
+                                    user_id=self.user_id
+                                )
+                            if not recovered_buyer_id and order_id:
+                                recovered_buyer_id = db_manager.get_latest_customer_service_peer_id(
+                                    cookie_id=self.cookie_id,
+                                    order_id=order_id,
+                                    user_id=self.user_id
+                                )
+                            if recovered_buyer_id:
+                                resolved_buyer_id = recovered_buyer_id
+                                logger.info(
+                                    f"【{self.cookie_id}】订单 {order_id} 已通过客服消息回填 buyer_id: {resolved_buyer_id}"
+                                )
+
                         # 过滤掉买家订单（如果buyer_id是自己，说明是自己购买的订单）
-                        if buyer_id and buyer_id == self.myid:
-                            logger.info(f"【{self.cookie_id}】跳过买家订单 {order_id}，buyer_id={buyer_id} 等于自己的ID")
+                        if resolved_buyer_id and resolved_buyer_id == self.myid:
+                            logger.info(f"【{self.cookie_id}】跳过买家订单 {order_id}，buyer_id={resolved_buyer_id} 等于自己的ID")
                             return result  # 直接返回，不保存买家订单
 
                         # 检查cookie_id是否在cookies表中存在
@@ -5665,7 +5735,7 @@ Cookie数量: {cookie_count}
                             success = db_manager.insert_or_update_order(
                                 order_id=order_id,
                                 item_id=item_id,
-                                buyer_id=buyer_id,
+                                buyer_id=resolved_buyer_id or None,
                                 buyer_nick=safe_buyer_nick,
                                 sid=sid,
                                 spec_name=spec_name,
@@ -5975,10 +6045,16 @@ Cookie数量: {cookie_count}
                 # 保存订单基本信息到数据库（如果还没有详细信息）
                 try:
                     from db_manager import db_manager
+                    chat_id_clean = self._normalize_chat_id(chat_id)
+                    resolved_buyer_id = str(send_user_id or '').split('@')[0].strip()
+                    if resolved_buyer_id in ('', 'unknown', 'unknown_user'):
+                        resolved_buyer_id = None
+                    if chat_id_clean and resolved_buyer_id == chat_id_clean:
+                        resolved_buyer_id = None
 
                     # 过滤掉买家订单（如果send_user_id是自己，说明是自己购买的订单）
-                    if send_user_id and send_user_id == self.myid:
-                        logger.info(f"【{self.cookie_id}】跳过买家订单 {order_id}，buyer_id={send_user_id} 等于自己的ID")
+                    if resolved_buyer_id and resolved_buyer_id == self.myid:
+                        logger.info(f"【{self.cookie_id}】跳过买家订单 {order_id}，buyer_id={resolved_buyer_id} 等于自己的ID")
                         # 不保存买家订单，但继续返回发货内容（如果有的话）
                     else:
                         # 检查cookie_id是否在cookies表中存在
@@ -5993,8 +6069,9 @@ Cookie数量: {cookie_count}
                                 success = db_manager.insert_or_update_order(
                                     order_id=order_id,
                                     item_id=item_id,
-                                    buyer_id=send_user_id,
+                                    buyer_id=resolved_buyer_id,
                                     buyer_nick=self._normalize_buyer_nick(send_user_name),
+                                    sid=chat_id_clean or None,
                                     cookie_id=self.cookie_id,
                                     trade_side=resolved_trade_side
                                 )
@@ -9148,7 +9225,8 @@ Cookie数量: {cookie_count}
                         try:
                             message_1 = message.get("1")
                             if isinstance(message_1, str) and '@' in message_1:
-                                temp_user_id = message_1.split('@')[0]
+                                # 简化结构中的 message['1'] 是 sid，不是 buyer_id
+                                temp_user_id = None
                             elif isinstance(message_1, dict):
                                 # 从字典中提取用户ID和买家昵称
                                 if "10" in message_1 and isinstance(message_1["10"], dict):
@@ -9173,7 +9251,9 @@ Cookie数量: {cookie_count}
                         # sid在message['1']['2']中
                         try:
                             message_1 = message.get("1")
-                            if isinstance(message_1, dict):
+                            if isinstance(message_1, str):
+                                temp_sid = message_1
+                            elif isinstance(message_1, dict):
                                 temp_sid = message_1.get("2", "")
                                 if temp_sid:
                                     logger.info(f"【{self.cookie_id}】[{msg_id}] 📌 提取到sid: {temp_sid}")
@@ -9321,7 +9401,7 @@ Cookie数量: {cookie_count}
                             if recent_order:
                                 order_id = recent_order.get('order_id')
                                 real_item_id = recent_order.get('item_id')
-                                simple_user_id = recent_order.get('buyer_id', user_id)  # 从订单中获取buyer_id
+                                simple_user_id = recent_order.get('buyer_id')
                                 logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] ✅ 通过sid从数据库找到订单: order_id={order_id}, item_id={real_item_id}, buyer_id={simple_user_id}')
                                 
                                 # 【防重复检查】先检查该订单是否已经在冷却期内（说明完整消息已经处理过）

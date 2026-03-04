@@ -121,6 +121,38 @@ def _resolve_trade_side_for_order_refresh(order: Dict[str, Any]) -> Optional[str
     return None
 
 
+def _normalize_buyer_id(value: Any, sid: str = '') -> str:
+    buyer_id = str(value or '').split('@')[0].strip()
+    sid_clean = str(sid or '').split('@')[0].strip()
+    if buyer_id in ('', 'unknown', 'unknown_user'):
+        return ''
+    if sid_clean and buyer_id == sid_clean:
+        return ''
+    return buyer_id
+
+
+def _recover_order_buyer_id(order_id: str, cookie_id: str, sid: str, user_id: int) -> str:
+    """当订单缺少 buyer_id 时，尝试从客服消息记录中回填"""
+    recovered = ''
+    sid_clean = str(sid or '').split('@')[0].strip()
+    if sid_clean:
+        recovered = db_manager.get_latest_customer_service_peer_id(
+            cookie_id=cookie_id,
+            chat_id=sid_clean,
+            user_id=user_id
+        )
+    if not recovered:
+        recovered = db_manager.get_latest_customer_service_peer_id(
+            cookie_id=cookie_id,
+            order_id=order_id,
+            user_id=user_id
+        )
+    recovered = _normalize_buyer_id(recovered, sid=sid)
+    if recovered:
+        db_manager.insert_or_update_order(order_id=order_id, buyer_id=recovered)
+    return recovered
+
+
 def cleanup_login_trackers():
     """清理过期的登录追踪记录"""
     current_time = time.time()
@@ -8566,7 +8598,12 @@ async def manual_deliver_order(order_id: str, current_user: Dict[str, Any] = Dep
 
         # 获取订单详情
         item_id = order.get('item_id')
-        buyer_id = order.get('buyer_id')
+        sid = order.get('sid')
+        buyer_id = _normalize_buyer_id(order.get('buyer_id'), sid=sid)
+        if not buyer_id:
+            buyer_id = _recover_order_buyer_id(order_id, cookie_id, sid, user_id)
+            if buyer_id:
+                log_with_user('info', f"手动发货前已回填 buyer_id: order_id={order_id}, buyer_id={buyer_id}", current_user)
 
         if not item_id:
             return {"success": False, "delivered": False, "message": "订单缺少商品信息"}
@@ -8665,14 +8702,18 @@ async def refresh_order_status(order_id: str, current_user: Dict[str, Any] = Dep
 
         # 获取订单详情（强制从闲鱼平台获取最新信息，跳过缓存）
         item_id = order.get('item_id')
-        buyer_id = order.get('buyer_id')
         sid = order.get('sid')
+        buyer_id = _normalize_buyer_id(order.get('buyer_id'), sid=sid)
+        if not buyer_id:
+            buyer_id = _recover_order_buyer_id(order_id, cookie_id, sid, user_id)
+            if buyer_id:
+                log_with_user('info', f"刷新订单前已回填 buyer_id: order_id={order_id}, buyer_id={buyer_id}", current_user)
         refresh_trade_side = _resolve_trade_side_for_order_refresh(order)
 
         result = await xianyu_instance.fetch_order_detail_info(
             order_id=order_id,
             item_id=item_id,
-            buyer_id=buyer_id,
+            buyer_id=buyer_id or None,
             sid=sid,
             trade_side=refresh_trade_side,
             force_refresh=True  # 强制刷新，跳过缓存
