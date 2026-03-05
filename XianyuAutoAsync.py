@@ -10984,6 +10984,246 @@ Cookie数量: {cookie_count}
             "items": all_items
         }
 
+    async def one_click_polish_items(self):
+        """执行“我发布的”页面一键擦亮，出现“今日已擦亮”视为成功"""
+        playwright = None
+        browser = None
+        try:
+            logger.info(f"【{self.cookie_id}】开始执行一键擦亮")
+            playwright = await _start_playwright_safe(self.cookie_id)
+            if not playwright:
+                return {
+                    "success": False,
+                    "status": "failed",
+                    "message": "Playwright启动失败",
+                    "entry_url": "",
+                    "clicked": False
+                }
+
+            browser_args = [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--disable-gpu',
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-renderer-backgrounding',
+                '--disable-features=TranslateUI',
+                '--disable-ipc-flooding-protection',
+                '--disable-extensions',
+                '--disable-default-apps',
+                '--disable-sync',
+                '--disable-translate',
+                '--hide-scrollbars',
+                '--mute-audio',
+                '--no-default-browser-check',
+                '--no-pings'
+            ]
+
+            if os.getenv('DOCKER_ENV'):
+                browser_args.extend([
+                    '--disable-background-networking',
+                    '--disable-client-side-phishing-detection',
+                    '--disable-hang-monitor',
+                    '--disable-popup-blocking',
+                    '--disable-prompt-on-repost',
+                    '--disable-web-resources',
+                    '--metrics-recording-only',
+                    '--safebrowsing-disable-auto-update',
+                    '--enable-automation',
+                    '--password-store=basic',
+                    '--use-mock-keychain'
+                ])
+
+            browser = await playwright.chromium.launch(
+                headless=True,
+                args=browser_args
+            )
+
+            context = await browser.new_context(
+                viewport={'width': 390, 'height': 844},
+                user_agent='Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 AliApp(TB/11.15.0)',
+                device_scale_factor=3,
+                is_mobile=True,
+                has_touch=True
+            )
+
+            cookies = []
+            for cookie_pair in self.cookies_str.split('; '):
+                if '=' in cookie_pair:
+                    name, value = cookie_pair.split('=', 1)
+                    cookies.append({
+                        'name': name.strip(),
+                        'value': value.strip(),
+                        'domain': '.goofish.com',
+                        'path': '/'
+                    })
+            await context.add_cookies(cookies)
+            page = await context.new_page()
+
+            async def _has_any_text(text_list):
+                for text in text_list:
+                    try:
+                        if await page.locator(f"text={text}").count() > 0:
+                            return True, text
+                    except Exception:
+                        continue
+                return False, ""
+
+            async def _click_first(selectors, action_name):
+                for selector in selectors:
+                    try:
+                        locator = page.locator(selector).first
+                        if await locator.count() <= 0:
+                            continue
+                        try:
+                            await locator.scroll_into_view_if_needed(timeout=1500)
+                        except Exception:
+                            pass
+                        await locator.click(timeout=3500)
+                        logger.info(f"【{self.cookie_id}】{action_name}成功，selector={selector}")
+                        return True, selector
+                    except Exception as e:
+                        logger.debug(f"【{self.cookie_id}】{action_name}尝试失败，selector={selector}, err={self._safe_str(e)}")
+                        continue
+                return False, ""
+
+            polished_texts = ["今日已擦亮", "今天已擦亮"]
+            polish_success_texts = ["擦亮成功", "已擦亮"]
+            polish_button_selectors = [
+                "text=一键擦亮",
+                "button:has-text('一键擦亮')",
+                "[role='button']:has-text('一键擦亮')",
+                "span:has-text('一键擦亮')",
+                "div:has-text('一键擦亮')"
+            ]
+            my_publish_selectors = [
+                "text=我发布的",
+                "a:has-text('我发布的')",
+                "button:has-text('我发布的')",
+                "span:has-text('我发布的')",
+                "div:has-text('我发布的')"
+            ]
+            url_attempts = [
+                f"https://www.goofish.com/personal?userId={self.myid}",
+                "https://www.goofish.com/personal",
+                f"https://h5.m.goofish.com/personal?userId={self.myid}",
+                "https://h5.m.goofish.com/personal",
+                "https://www.goofish.com/im"
+            ]
+
+            last_url = ""
+            clicked = False
+            for url in url_attempts:
+                last_url = url
+                try:
+                    logger.info(f"【{self.cookie_id}】尝试进入页面: {url}")
+                    await page.goto(url, wait_until='domcontentloaded', timeout=25000)
+                except Exception as e:
+                    logger.warning(f"【{self.cookie_id}】页面访问失败: {url}, err={self._safe_str(e)}")
+                    continue
+
+                await asyncio.sleep(1.2)
+
+                has_polished, polished_text = await _has_any_text(polished_texts)
+                if has_polished:
+                    return {
+                        "success": True,
+                        "status": "already_polished",
+                        "message": polished_text,
+                        "entry_url": url,
+                        "clicked": False
+                    }
+
+                click_polish_ok, _ = await _click_first(polish_button_selectors, "点击一键擦亮")
+                if not click_polish_ok:
+                    click_publish_ok, _ = await _click_first(my_publish_selectors, "点击我发布的")
+                    if click_publish_ok:
+                        await asyncio.sleep(1.0)
+                        has_polished, polished_text = await _has_any_text(polished_texts)
+                        if has_polished:
+                            return {
+                                "success": True,
+                                "status": "already_polished",
+                                "message": polished_text,
+                                "entry_url": url,
+                                "clicked": False
+                            }
+                        click_polish_ok, _ = await _click_first(polish_button_selectors, "点击一键擦亮")
+
+                if not click_polish_ok:
+                    continue
+
+                clicked = True
+                await asyncio.sleep(1.5)
+
+                has_polished, polished_text = await _has_any_text(polished_texts)
+                if has_polished:
+                    return {
+                        "success": True,
+                        "status": "success",
+                        "message": polished_text,
+                        "entry_url": url,
+                        "clicked": True
+                    }
+
+                has_success_toast, success_text = await _has_any_text(polish_success_texts)
+                if has_success_toast:
+                    return {
+                        "success": True,
+                        "status": "success",
+                        "message": success_text,
+                        "entry_url": url,
+                        "clicked": True
+                    }
+
+                try:
+                    await page.wait_for_selector("text=今日已擦亮", timeout=5000)
+                    return {
+                        "success": True,
+                        "status": "success",
+                        "message": "今日已擦亮",
+                        "entry_url": url,
+                        "clicked": True
+                    }
+                except Exception:
+                    logger.warning(f"【{self.cookie_id}】已点击一键擦亮，但未检测到“今日已擦亮”")
+
+            if clicked:
+                return {
+                    "success": False,
+                    "status": "verify_failed",
+                    "message": "已点击一键擦亮，但未检测到“今日已擦亮”",
+                    "entry_url": last_url,
+                    "clicked": True
+                }
+
+            return {
+                "success": False,
+                "status": "not_found",
+                "message": "未找到“我发布的”或“一键擦亮”按钮（可能Cookie失效或页面结构变化）",
+                "entry_url": last_url,
+                "clicked": False
+            }
+        except Exception as e:
+            logger.error(f"【{self.cookie_id}】执行一键擦亮异常: {self._safe_str(e)}")
+            return {
+                "success": False,
+                "status": "failed",
+                "message": f"执行异常: {self._safe_str(e)}",
+                "entry_url": "",
+                "clicked": False
+            }
+        finally:
+            if browser or playwright:
+                try:
+                    await asyncio.wait_for(self._async_close_browser(browser, playwright), timeout=15.0)
+                except Exception as close_err:
+                    logger.warning(f"【{self.cookie_id}】一键擦亮关闭浏览器失败: {self._safe_str(close_err)}")
+
     async def send_image_msg(self, ws, cid, toid, image_url, width=800, height=600, card_id=None, peer_name: str = ''):
         """发送图片消息"""
         try:

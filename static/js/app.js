@@ -8775,25 +8775,23 @@ function initItemsSearch() {
     }
 }
 
+function collectSelectedItemsForBatchAction() {
+    const selectedItemCheckboxes = document.querySelectorAll('#itemsTableBody input[name="itemCheckbox"]:checked');
+    const uniqueItems = new Map();
+    selectedItemCheckboxes.forEach(checkbox => {
+        const cookieId = (checkbox.dataset.cookieId || '').trim();
+        const itemId = (checkbox.dataset.itemId || '').trim();
+        if (!cookieId || !itemId) return;
+        const key = `${cookieId}:${itemId}`;
+        uniqueItems.set(key, { cookie_id: cookieId, item_id: itemId });
+    });
+    return Array.from(uniqueItems.values());
+}
+
 // 刷新商品列表
 async function refreshItems() {
-    const selectedItemCheckboxes = document.querySelectorAll('#itemsTableBody input[name="itemCheckbox"]:checked');
-    if (selectedItemCheckboxes.length > 0) {
-        const uniqueItems = new Map();
-        selectedItemCheckboxes.forEach(checkbox => {
-            const cookieId = (checkbox.dataset.cookieId || '').trim();
-            const itemId = (checkbox.dataset.itemId || '').trim();
-            if (!cookieId || !itemId) return;
-            const key = `${cookieId}:${itemId}`;
-            uniqueItems.set(key, { cookie_id: cookieId, item_id: itemId });
-        });
-
-        const selectedItems = Array.from(uniqueItems.values());
-        if (selectedItems.length === 0) {
-            showToast('未找到有效的勾选商品', 'warning');
-            return;
-        }
-
+    const selectedItems = collectSelectedItemsForBatchAction();
+    if (selectedItems.length > 0) {
         const accountCount = new Set(selectedItems.map(item => item.cookie_id)).size;
         const confirmed = confirm(
             `确定要刷新勾选的 ${selectedItems.length} 个商品吗？\n\n` +
@@ -8885,6 +8883,74 @@ async function refreshItems() {
         showToast('商品列表与状态已刷新', 'success');
     } else {
         showToast('商品列表已刷新（未选择账号时不主动同步状态）', 'info');
+    }
+}
+
+// 执行一键擦亮
+async function polishItems() {
+    const selectedItems = collectSelectedItemsForBatchAction();
+    const cookieSelect = document.getElementById('itemCookieFilter');
+    const selectedCookieId = cookieSelect ? (cookieSelect.value || '').trim() : '';
+
+    let requestItems = selectedItems;
+    if (requestItems.length === 0 && selectedCookieId) {
+        requestItems = [{ cookie_id: selectedCookieId, item_id: '__all__' }];
+    }
+
+    if (requestItems.length === 0) {
+        showToast('请先勾选商品或选择账号后再执行一键擦亮', 'warning');
+        return;
+    }
+
+    const accountCount = new Set(requestItems.map(item => item.cookie_id)).size;
+    const confirmed = confirm(
+        `确定执行一键擦亮吗？\n\n` +
+        `涉及账号数：${accountCount}\n` +
+        `成功标志：页面出现“今日已擦亮”。`
+    );
+    if (!confirmed) return;
+
+    const polishBtn = document.getElementById('polishItemsBtn');
+    const originalBtnText = polishBtn ? polishBtn.innerHTML : '';
+    if (polishBtn) {
+        polishBtn.disabled = true;
+        polishBtn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>擦亮中...';
+    }
+
+    try {
+        const response = await fetch(`${apiBase}/items/polish-selected`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${authToken}`
+            },
+            body: JSON.stringify({ items: requestItems })
+        });
+
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(result.detail || result.message || '一键擦亮失败');
+        }
+
+        const polishedCount = result.polished_account_count || 0;
+        const alreadyCount = result.already_polished_account_count || 0;
+        const failedCount = result.failed_account_count || 0;
+
+        await refreshItemsData();
+
+        if (failedCount > 0) {
+            showToast(`擦亮完成：成功 ${polishedCount}，已擦亮 ${alreadyCount}，失败 ${failedCount}`, 'warning');
+        } else {
+            showToast(result.message || `擦亮完成：成功 ${polishedCount}，已擦亮 ${alreadyCount}`, 'success');
+        }
+    } catch (error) {
+        console.error('一键擦亮失败:', error);
+        showToast(`一键擦亮失败: ${error.message || '未知错误'}`, 'danger');
+    } finally {
+        if (polishBtn) {
+            polishBtn.disabled = false;
+            polishBtn.innerHTML = originalBtnText;
+        }
     }
 }
 
