@@ -581,7 +581,7 @@ class OrderDetailFetcher:
                 return ''
 
     def _extract_sku_from_text(self, text: str) -> Dict[str, str]:
-        """从页面纯文本中兜底提取金额/规格/数量"""
+        """从页面纯文本中兜底提取金额/数量（不做规格推断）"""
         result: Dict[str, str] = {}
         if not text:
             return result
@@ -613,65 +613,6 @@ class OrderDetailFetcher:
             if quantity_match:
                 result['quantity'] = quantity_match.group(1)
                 break
-
-        # 规格提取：过滤明显非规格行
-        spec_candidates = []
-        ignore_tokens = [
-            'http://', 'https://', 'fleamarket://', '订单', '买家', '卖家', '地址',
-            '手机', '电话', '时间', '发货', '付款', '交易', '退款', '去发货', '修改价格',
-            '等待你发货', '等待买家', '已发货', '待收货', '待发货',
-            '统一社会信用代码', '经营许可证', '许可证', '备案', '备案号', 'ICP备',
-            '增值电信', '广播电视', '营业性演出', '集邮市场', '网络食品', '隐私政策',
-            '服务协议', '公司信息', '平台规则', '投诉', '举报', '客服'
-        ]
-
-        for line in lines:
-            normalized_line = line.replace('：', ':')
-            if ':' not in normalized_line:
-                continue
-            if any(token in normalized_line for token in ignore_tokens):
-                continue
-
-            left, right = normalized_line.split(':', 1)
-            left = left.strip()
-            right = right.strip()
-            if not left or not right:
-                continue
-            if len(left) > 16:
-                continue
-            if len(right) > 64:
-                continue
-
-            # 过滤日期时间误识别：如 "2026-03-04 21:33:50"
-            if re.search(r'(?:19|20)\d{2}[-/年]\d{1,2}[-/月]\d{1,2}', left) and re.fullmatch(r'\d{1,2}:\d{2}(?::\d{2})?', right):
-                continue
-
-            # 规格名至少应包含字母或中文，避免纯数字/时间片段被识别为规格名
-            if not re.search(r'[A-Za-z\u4e00-\u9fff]', left):
-                continue
-
-            # 过滤证照/长编码等明显非规格值
-            if re.search(r'[A-Za-z]{1,3}\d{5,}|\d{10,}', right):
-                continue
-
-            parsed = self._parse_sku_content(f"{left}:{right}")
-            if parsed:
-                spec_candidates.append(parsed)
-
-        if spec_candidates:
-            primary = spec_candidates[0]
-            if primary.get('spec_name') and primary.get('spec_value'):
-                result['spec_name'] = primary['spec_name']
-                result['spec_value'] = primary['spec_value']
-            if primary.get('spec_name_2') and primary.get('spec_value_2'):
-                result['spec_name_2'] = primary['spec_name_2']
-                result['spec_value_2'] = primary['spec_value_2']
-
-            if len(spec_candidates) > 1 and 'spec_name_2' not in result:
-                second = spec_candidates[1]
-                if second.get('spec_name') and second.get('spec_value'):
-                    result['spec_name_2'] = second['spec_name']
-                    result['spec_value_2'] = second['spec_value']
 
         return result
 
@@ -902,22 +843,20 @@ class OrderDetailFetcher:
                 result['quantity'] = quantity_value
                 logger.info(f"提取到数量: {quantity_value}")
 
-            # 如果核心字段缺失，使用页面文本兜底
+            # 如果金额或数量缺失，使用页面文本兜底（仅补金额/数量，不补规格）
             if (
                 'amount' not in result
-                or 'spec_name' not in result
-                or 'spec_value' not in result
                 or 'quantity' not in result
             ):
                 page_text = await self._get_page_text()
                 fallback_result = self._extract_sku_from_text(page_text)
 
-                for key in ['amount', 'spec_name', 'spec_value', 'spec_name_2', 'spec_value_2', 'quantity']:
+                for key in ['amount', 'quantity']:
                     if key not in result and fallback_result.get(key):
                         result[key] = fallback_result[key]
 
                 if fallback_result:
-                    logger.info(f"SKU文本兜底解析结果: {fallback_result}")
+                    logger.info(f"SKU文本兜底解析结果(仅金额/数量): {fallback_result}")
 
             # 确保数量字段存在，如果不存在则设置为1
             if 'quantity' not in result:
