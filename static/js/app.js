@@ -664,9 +664,14 @@ function renderDashboardDeliveryLogs(logs) {
             matchBadge = '<span class="badge bg-warning text-dark">兜底</span>';
         }
 
-        const ruleText = log.rule_keyword
-            ? `<div class="dashboard-delivery-rule" title="${escapeHtml(log.rule_keyword)}">${escapeHtml(log.rule_keyword)}</div>`
-            : '<span class="text-muted">未命中规则</span>';
+        let ruleText = '<span class="text-muted">未命中规则</span>';
+        if (log.rule_keyword) {
+            const keywordText = escapeHtml(log.rule_keyword);
+            ruleText = `<div class="dashboard-delivery-rule" title="${keywordText}">${keywordText}</div>`;
+        } else if (log.rule_id) {
+            const ruleIdText = escapeHtml(String(log.rule_id));
+            ruleText = `<div class="dashboard-delivery-rule" title="ID规则（规则ID: ${ruleIdText}）">ID规则（规则ID: ${ruleIdText}）</div>`;
+        }
 
         const channelText = log.channel === 'manual' ? '手动' : '自动';
         const reasonText = isSuccess
