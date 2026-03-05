@@ -3,7 +3,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional, Dict, Any, Awaitable
 from pathlib import Path
 from urllib.parse import unquote
 import hashlib
@@ -151,6 +151,28 @@ def _recover_order_buyer_id(order_id: str, cookie_id: str, sid: str, user_id: in
     if recovered:
         db_manager.insert_or_update_order(order_id=order_id, buyer_id=recovered)
     return recovered
+
+
+async def _run_on_cookie_manager_loop(coro: Awaitable[Any], timeout: Optional[float] = None) -> Any:
+    """确保协程在 CookieManager 所属事件循环执行，避免跨 loop 使用实例资源。"""
+    manager = getattr(cookie_manager, 'manager', None)
+    target_loop = getattr(manager, 'loop', None) if manager else None
+    if not target_loop or not target_loop.is_running():
+        return await coro
+
+    try:
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        current_loop = None
+
+    if current_loop is target_loop:
+        return await coro
+
+    future = asyncio.run_coroutine_threadsafe(coro, target_loop)
+    wrapped = asyncio.wrap_future(future)
+    if timeout and timeout > 0:
+        return await asyncio.wait_for(wrapped, timeout=timeout)
+    return await wrapped
 
 
 def cleanup_login_trackers():
@@ -8632,12 +8654,15 @@ async def manual_deliver_order(order_id: str, current_user: Dict[str, Any] = Dep
         item_title = item_info.get('item_title', '') if item_info else ''
 
         # 调用自动发货逻辑获取发货内容
-        delivery_result = await xianyu_instance._auto_delivery(
-            item_id=item_id,
-            item_title=item_title,
-            order_id=order_id,
-            send_user_id=buyer_id,
-            include_meta=True
+        delivery_result = await _run_on_cookie_manager_loop(
+            xianyu_instance._auto_delivery(
+                item_id=item_id,
+                item_title=item_title,
+                order_id=order_id,
+                send_user_id=buyer_id,
+                include_meta=True
+            ),
+            timeout=60
         )
 
         # 兼容旧逻辑：如果不是dict，按字符串结果处理
@@ -8690,15 +8715,24 @@ async def manual_deliver_order(order_id: str, current_user: Dict[str, Any] = Dep
                             # 提取cid部分（去掉@goofish后缀）
                             cid = sid.replace('@goofish', '')
                             log_with_user('info', f"手动发货: 使用现有WebSocket连接发送, cid={cid}, buyer_id={buyer_id}", current_user)
-                            await xianyu_instance.send_msg(ws, cid, buyer_id, delivery_content)
+                            await _run_on_cookie_manager_loop(
+                                xianyu_instance.send_msg(ws, cid, buyer_id, delivery_content),
+                                timeout=30
+                            )
                         else:
                             # 如果没有sid，尝试用buyer_id作为cid
                             log_with_user('warning', f"手动发货: 订单无sid，尝试使用buyer_id作为cid", current_user)
-                            await xianyu_instance.send_msg(ws, buyer_id, buyer_id, delivery_content)
+                            await _run_on_cookie_manager_loop(
+                                xianyu_instance.send_msg(ws, buyer_id, buyer_id, delivery_content),
+                                timeout=30
+                            )
                     else:
                         # 没有现有连接，回退到send_msg_once
                         log_with_user('warning', f"手动发货: 无现有WebSocket连接，使用send_msg_once", current_user)
-                        await xianyu_instance.send_msg_once(buyer_id, item_id, delivery_content)
+                        await _run_on_cookie_manager_loop(
+                            xianyu_instance.send_msg_once(buyer_id, item_id, delivery_content),
+                            timeout=30
+                        )
                     log_with_user('info', f"手动发货消息已发送: 订单 {order_id}, 买家 {buyer_id}", current_user)
 
                 db_manager.create_delivery_log(
@@ -8807,13 +8841,16 @@ async def refresh_order_status(order_id: str, current_user: Dict[str, Any] = Dep
                 log_with_user('info', f"刷新订单前已回填 buyer_id: order_id={order_id}, buyer_id={buyer_id}", current_user)
         refresh_trade_side = _resolve_trade_side_for_order_refresh(order)
 
-        result = await xianyu_instance.fetch_order_detail_info(
-            order_id=order_id,
-            item_id=item_id,
-            buyer_id=buyer_id or None,
-            sid=sid,
-            trade_side=refresh_trade_side,
-            force_refresh=True  # 强制刷新，跳过缓存
+        result = await _run_on_cookie_manager_loop(
+            xianyu_instance.fetch_order_detail_info(
+                order_id=order_id,
+                item_id=item_id,
+                buyer_id=buyer_id or None,
+                sid=sid,
+                trade_side=refresh_trade_side,
+                force_refresh=True  # 强制刷新，跳过缓存
+            ),
+            timeout=90
         )
 
         if result:
