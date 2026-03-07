@@ -7332,6 +7332,58 @@ Cookie数量: {cookie_count}
 
         return "", ""
 
+    def _resolve_cs_outbound_peer(self, chat_id: str, item_id: str = '', order_id: str = '', message_10=None):
+        peer_user_id, peer_user_name = self._get_recent_cs_peer_by_chat(chat_id)
+        if peer_user_id:
+            return peer_user_id, peer_user_name
+
+        try:
+            if order_id and self.user_id is not None:
+                recovered_peer_id = db_manager.get_latest_customer_service_peer_id(
+                    cookie_id=self.cookie_id,
+                    order_id=order_id,
+                    user_id=self.user_id
+                )
+                if recovered_peer_id:
+                    recovered_peer_name = db_manager.get_latest_customer_service_peer_name(
+                        self.cookie_id,
+                        recovered_peer_id
+                    )
+                    return recovered_peer_id, recovered_peer_name
+        except Exception as e:
+            logger.debug(f"【{self.cookie_id}】按order_id查询最近对端用户失败: {self._safe_str(e)}")
+
+        try:
+            if item_id and self.user_id is not None:
+                recovered_peer_id, recovered_peer_name = db_manager.get_latest_customer_service_peer_by_item(
+                    cookie_id=self.cookie_id,
+                    item_id=item_id,
+                    user_id=self.user_id
+                )
+                if recovered_peer_id:
+                    return recovered_peer_id, recovered_peer_name
+        except Exception as e:
+            logger.debug(f"【{self.cookie_id}】按item_id查询最近对端用户失败: {self._safe_str(e)}")
+
+        try:
+            if isinstance(message_10, dict):
+                reminder_url = str(message_10.get('reminderUrl') or '').strip()
+                if reminder_url:
+                    from urllib.parse import parse_qs, urlparse
+                    query = parse_qs(urlparse(reminder_url).query)
+                    reminder_peer_id = self._normalize_chat_id((query.get('peerUserId') or [''])[0])
+                    reminder_sid = self._normalize_chat_id((query.get('sid') or [''])[0])
+                    if reminder_peer_id and reminder_peer_id not in (self.myid, reminder_sid):
+                        reminder_peer_name = db_manager.get_latest_customer_service_peer_name(
+                            self.cookie_id,
+                            reminder_peer_id
+                        )
+                        return reminder_peer_id, reminder_peer_name
+        except Exception as e:
+            logger.debug(f"【{self.cookie_id}】解析reminderUrl回查对端用户失败: {self._safe_str(e)}")
+
+        return '', ''
+
     def _extract_chat_id_from_message_body(self, message_body) -> str:
         if isinstance(message_body, dict):
             primary_value = str(message_body.get("3") or '').strip()
@@ -9949,7 +10001,12 @@ Cookie数量: {cookie_count}
                     if self._is_cs_outbound_duplicate(outbound_signature, create_time):
                         logger.debug(f"【{self.cookie_id}】[{msg_id}] 检测到客服台出站回显，跳过重复写入")
                     else:
-                        peer_user_id, peer_user_name = self._get_recent_cs_peer_by_chat(chat_id)
+                        peer_user_id, peer_user_name = self._resolve_cs_outbound_peer(
+                            chat_id=chat_id,
+                            item_id=item_id,
+                            order_id=order_id or '',
+                            message_10=message_10
+                        )
                         record_success = self._record_customer_service_message(
                             chat_id=chat_id,
                             peer_user_id=peer_user_id,

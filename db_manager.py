@@ -2014,6 +2014,7 @@ Cookie数量: {cookie_count}
                 logger.error(f"获取客服台运行期统计失败: {e}")
                 return {'total_messages': 0, 'total_conversations': 0}
 
+
     def get_customer_service_conversations(self, user_id: int) -> List[Dict[str, Any]]:
         with self.lock:
             try:
@@ -2021,54 +2022,94 @@ Cookie数量: {cookie_count}
                 self._execute_sql(
                     cursor,
                     '''
-                    SELECT
-                        m.cookie_id,
-                        m.chat_id,
-                        m.peer_user_id,
-                        m.peer_user_name,
-                        m.direction,
-                        m.message_type,
-                        m.content,
-                        m.image_url,
-                        m.item_id,
-                        m.order_id,
-                        m.message_time,
-                        c.message_count
-                    FROM customer_service_messages m
-                    JOIN (
-                        SELECT
-                            grouped.cookie_id,
-                            grouped.chat_id,
-                            grouped.message_count,
-                            (
-                                SELECT x.id
-                                FROM customer_service_messages x
-                                WHERE x.user_id = ?
-                                  AND x.cookie_id = grouped.cookie_id
-                                  AND x.chat_id = grouped.chat_id
-                                ORDER BY x.message_time DESC, x.id DESC
-                                LIMIT 1
-                            ) AS latest_id
-                        FROM (
-                            SELECT cookie_id, chat_id, COUNT(1) AS message_count
-                            FROM customer_service_messages
-                            WHERE user_id = ?
-                            GROUP BY cookie_id, chat_id
-                        ) grouped
-                    ) c
-                    ON m.id = c.latest_id
-                    ORDER BY m.message_time DESC, m.id DESC
+                    SELECT id, cookie_id, chat_id, peer_user_id, peer_user_name,
+                           direction, message_type, content, image_url, item_id, order_id, message_time
+                    FROM customer_service_messages
+                    WHERE user_id = ?
+                    ORDER BY message_time DESC, id DESC
                     ''',
-                    (
-                        user_id,
-                        user_id
-                    )
+                    (user_id,)
                 )
                 rows = cursor.fetchall()
-                conversations = []
+
+                per_chat: Dict[Tuple[str, str], Dict[str, Any]] = {}
                 for row in rows:
-                    message_type = row[5] or 'text'
-                    raw_content = row[6] or ''
+                    cookie_id = str(row[1] or '').strip()
+                    chat_id = self._normalize_chat_id(row[2])
+                    if not cookie_id or not chat_id:
+                        continue
+
+                    chat_key = (cookie_id, chat_id)
+                    peer_user_id = str(row[3] or '').strip()
+                    peer_user_name = str(row[4] or '').strip()
+                    chat_entry = per_chat.get(chat_key)
+                    if chat_entry is None:
+                        per_chat[chat_key] = {
+                            'cookie_id': cookie_id,
+                            'chat_id': chat_id,
+                            'peer_user_id': peer_user_id,
+                            'peer_user_name': peer_user_name,
+                            'direction': row[5] or 'in',
+                            'message_type': row[6] or 'text',
+                            'content': row[7] or '',
+                            'image_url': row[8] or '',
+                            'item_id': row[9] or '',
+                            'order_id': row[10] or '',
+                            'message_time': int(row[11] or 0),
+                            'message_count': 1
+                        }
+                        continue
+
+                    chat_entry['message_count'] += 1
+                    if not chat_entry['peer_user_id'] and peer_user_id:
+                        chat_entry['peer_user_id'] = peer_user_id
+                    if not chat_entry['peer_user_name'] and peer_user_name:
+                        chat_entry['peer_user_name'] = peer_user_name
+                    if not chat_entry['item_id'] and row[9]:
+                        chat_entry['item_id'] = row[9]
+                    if not chat_entry['order_id'] and row[10]:
+                        chat_entry['order_id'] = row[10]
+
+                conversations_by_key: Dict[Tuple[str, str], Dict[str, Any]] = {}
+                for chat_entry in per_chat.values():
+                    peer_user_id = str(chat_entry.get('peer_user_id') or '').strip()
+                    merge_key = (
+                        chat_entry['cookie_id'],
+                        f"peer:{peer_user_id}" if peer_user_id else f"chat:{chat_entry['chat_id']}"
+                    )
+                    existing = conversations_by_key.get(merge_key)
+                    if existing is None:
+                        conversations_by_key[merge_key] = dict(chat_entry)
+                        continue
+
+                    existing['message_count'] += int(chat_entry.get('message_count') or 0)
+                    if int(chat_entry.get('message_time') or 0) > int(existing.get('message_time') or 0):
+                        existing['chat_id'] = chat_entry['chat_id']
+                        existing['direction'] = chat_entry['direction']
+                        existing['message_type'] = chat_entry['message_type']
+                        existing['content'] = chat_entry['content']
+                        existing['image_url'] = chat_entry['image_url']
+                        existing['item_id'] = chat_entry['item_id']
+                        existing['order_id'] = chat_entry['order_id']
+                        existing['message_time'] = chat_entry['message_time']
+                    if not existing.get('peer_user_id') and peer_user_id:
+                        existing['peer_user_id'] = peer_user_id
+                    if not existing.get('peer_user_name') and chat_entry.get('peer_user_name'):
+                        existing['peer_user_name'] = chat_entry['peer_user_name']
+                    if not existing.get('item_id') and chat_entry.get('item_id'):
+                        existing['item_id'] = chat_entry['item_id']
+                    if not existing.get('order_id') and chat_entry.get('order_id'):
+                        existing['order_id'] = chat_entry['order_id']
+
+                conversations = []
+                sorted_conversations = sorted(
+                    conversations_by_key.values(),
+                    key=lambda item: (int(item.get('message_time') or 0), str(item.get('chat_id') or '')),
+                    reverse=True
+                )
+                for item in sorted_conversations:
+                    message_type = item.get('message_type') or 'text'
+                    raw_content = item.get('content') or ''
                     preview = raw_content
                     if message_type == 'image':
                         preview = '[图片]'
@@ -2077,34 +2118,43 @@ Cookie数量: {cookie_count}
                     if len(preview) > 80:
                         preview = preview[:80] + '...'
 
-                    peer_user_name = (row[3] or '').strip()
-                    peer_user_id = (row[2] or '').strip()
+                    peer_user_id = str(item.get('peer_user_id') or '').strip()
+                    peer_user_name = str(item.get('peer_user_name') or '').strip()
                     if not peer_user_name:
                         peer_user_name = peer_user_id or '未知用户'
 
                     conversations.append({
-                        'cookie_id': row[0],
-                        'chat_id': row[1],
+                        'cookie_id': item['cookie_id'],
+                        'chat_id': item['chat_id'],
                         'peer_user_id': peer_user_id,
                         'peer_user_name': peer_user_name,
-                        'last_message_direction': row[4] or 'in',
+                        'last_message_direction': item.get('direction') or 'in',
                         'last_message_type': message_type,
                         'last_message_preview': preview,
                         'last_message_content': raw_content,
-                        'last_image_url': row[7] or '',
-                        'item_id': row[8] or '',
-                        'order_id': row[9] or '',
-                        'last_message_time': int(row[10] or 0),
-                        'message_count': int(row[11] or 0)
+                        'last_image_url': item.get('image_url') or '',
+                        'item_id': item.get('item_id') or '',
+                        'order_id': item.get('order_id') or '',
+                        'last_message_time': int(item.get('message_time') or 0),
+                        'message_count': int(item.get('message_count') or 0)
                     })
                 return conversations
             except Exception as e:
                 logger.error(f"获取客服台会话列表失败: {e}")
                 return []
 
-    def get_customer_service_messages(self, user_id: int, cookie_id: str, chat_id: str, limit: int = 200) -> List[Dict[str, Any]]:
+
+    def get_customer_service_messages(
+        self,
+        user_id: int,
+        cookie_id: str,
+        chat_id: str,
+        limit: int = 200,
+        peer_user_id: str = ''
+    ) -> List[Dict[str, Any]]:
         normalized_chat_id = self._normalize_chat_id(chat_id)
-        if not cookie_id or not normalized_chat_id:
+        normalized_peer_user_id = self._normalize_chat_id(peer_user_id)
+        if not cookie_id or (not normalized_chat_id and not normalized_peer_user_id):
             return []
 
         safe_limit = max(1, min(int(limit), self.customer_service_per_session_limit))
@@ -2112,18 +2162,59 @@ Cookie数量: {cookie_count}
         with self.lock:
             try:
                 cursor = self.conn.cursor()
-                self._execute_sql(
-                    cursor,
-                    '''
+                sql = '''
                     SELECT id, direction, message_type, content, image_url,
                            peer_user_id, peer_user_name, item_id, order_id, message_time
                     FROM customer_service_messages
                     WHERE user_id = ? AND cookie_id = ? AND chat_id = ?
                     ORDER BY message_time DESC, id DESC
                     LIMIT ?
-                    ''',
-                    (user_id, cookie_id, normalized_chat_id, safe_limit)
-                )
+                '''
+                params: List[Any] = [user_id, cookie_id, normalized_chat_id, safe_limit]
+
+                if normalized_peer_user_id:
+                    self._execute_sql(
+                        cursor,
+                        '''
+                        SELECT DISTINCT chat_id
+                        FROM customer_service_messages
+                        WHERE user_id = ? AND cookie_id = ? AND peer_user_id = ?
+                          AND chat_id IS NOT NULL AND TRIM(chat_id) <> ''
+                        ''',
+                        (user_id, cookie_id, normalized_peer_user_id)
+                    )
+                    related_chat_ids = []
+                    for row in cursor.fetchall():
+                        related_chat_id = self._normalize_chat_id(row[0])
+                        if related_chat_id and related_chat_id not in related_chat_ids:
+                            related_chat_ids.append(related_chat_id)
+                    if normalized_chat_id and normalized_chat_id not in related_chat_ids:
+                        related_chat_ids.insert(0, normalized_chat_id)
+
+                    if related_chat_ids:
+                        placeholders = ', '.join('?' for _ in related_chat_ids)
+                        sql = f'''
+                            SELECT id, direction, message_type, content, image_url,
+                                   peer_user_id, peer_user_name, item_id, order_id, message_time
+                            FROM customer_service_messages
+                            WHERE user_id = ? AND cookie_id = ?
+                              AND (peer_user_id = ? OR chat_id IN ({placeholders}))
+                            ORDER BY message_time DESC, id DESC
+                            LIMIT ?
+                        '''
+                        params = [user_id, cookie_id, normalized_peer_user_id, *related_chat_ids, safe_limit]
+                    else:
+                        sql = '''
+                            SELECT id, direction, message_type, content, image_url,
+                                   peer_user_id, peer_user_name, item_id, order_id, message_time
+                            FROM customer_service_messages
+                            WHERE user_id = ? AND cookie_id = ? AND peer_user_id = ?
+                            ORDER BY message_time DESC, id DESC
+                            LIMIT ?
+                        '''
+                        params = [user_id, cookie_id, normalized_peer_user_id, safe_limit]
+
+                self._execute_sql(cursor, sql, tuple(params))
                 rows = cursor.fetchall()
                 rows.reverse()
                 messages = []
@@ -2144,6 +2235,7 @@ Cookie数量: {cookie_count}
             except Exception as e:
                 logger.error(f"获取客服台消息失败: {e}")
                 return []
+
 
     def get_latest_customer_service_peer_name(self, cookie_id: str, peer_user_id: str) -> str:
         normalized_peer_id = self._normalize_chat_id(peer_user_id)
@@ -2228,6 +2320,51 @@ Cookie数量: {cookie_count}
                 )
                 return ''
 
+    def get_latest_customer_service_peer_by_item(
+        self,
+        cookie_id: str,
+        item_id: str,
+        user_id: int = None
+    ) -> Tuple[str, str]:
+        """按商品回查最近的对端用户信息（用于出站回显兜底）。"""
+        safe_cookie_id = str(cookie_id or '').strip()
+        safe_item_id = str(item_id or '').strip()
+        if not safe_cookie_id or not safe_item_id:
+            return '', ''
+
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                where_clauses = [
+                    "cookie_id = ?",
+                    "item_id = ?",
+                    "peer_user_id IS NOT NULL",
+                    "TRIM(peer_user_id) <> ''"
+                ]
+                params: List[Any] = [safe_cookie_id, safe_item_id]
+
+                if user_id is not None:
+                    where_clauses.insert(0, "user_id = ?")
+                    params.insert(0, user_id)
+
+                sql = f'''
+                SELECT peer_user_id, peer_user_name
+                FROM customer_service_messages
+                WHERE {' AND '.join(where_clauses)}
+                ORDER BY message_time DESC, id DESC
+                LIMIT 1
+                '''
+                self._execute_sql(cursor, sql, tuple(params))
+                row = cursor.fetchone()
+                if not row:
+                    return '', ''
+                return str(row[0] or '').split('@')[0].strip(), str(row[1] or '').strip()
+            except Exception as e:
+                logger.error(
+                    f"按商品回查客服台对端用户失败: cookie_id={safe_cookie_id}, item_id={safe_item_id}, "
+                    f"user_id={user_id}, error={e}"
+                )
+                return '', ''
     def get_latest_customer_service_chat_id(
         self,
         cookie_id: str,

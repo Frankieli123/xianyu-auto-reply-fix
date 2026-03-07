@@ -17099,15 +17099,23 @@ function formatCustomerServiceImageLibraryTime(timestamp) {
 }
 
 function getCustomerServiceSelectedConversation() {
-    if (!customerServiceState.selectedCookieId || !customerServiceState.selectedChatId) {
+    if (!customerServiceState.selectedCookieId || (!customerServiceState.selectedChatId && !customerServiceState.selectedPeerUserId)) {
         return null;
     }
+    const selectedPeerUserId = String(customerServiceState.selectedPeerUserId || '').trim();
     for (const account of customerServiceState.accounts) {
         if (account.id !== customerServiceState.selectedCookieId) continue;
-        const match = (account.conversations || []).find(
+        const conversations = account.conversations || [];
+        if (selectedPeerUserId) {
+            const peerMatch = conversations.find(
+                conv => String(conv.peer_user_id || '').trim() === selectedPeerUserId
+            );
+            if (peerMatch) return peerMatch;
+        }
+        const chatMatch = conversations.find(
             conv => String(conv.chat_id) === String(customerServiceState.selectedChatId)
         );
-        if (match) return match;
+        if (chatMatch) return chatMatch;
     }
     return null;
 }
@@ -17645,8 +17653,16 @@ async function refreshCustomerServiceData(options = {}) {
         customerServiceState.accounts = result.accounts || [];
 
         let keepSelection = false;
-        if (preserveSelection && customerServiceState.selectedCookieId && customerServiceState.selectedChatId) {
-            keepSelection = !!getCustomerServiceSelectedConversation();
+        let selectedConversation = null;
+        if (preserveSelection && customerServiceState.selectedCookieId && (customerServiceState.selectedChatId || customerServiceState.selectedPeerUserId)) {
+            selectedConversation = getCustomerServiceSelectedConversation();
+            keepSelection = !!selectedConversation;
+        }
+
+        if (keepSelection && selectedConversation) {
+            customerServiceState.selectedChatId = String(selectedConversation.chat_id || customerServiceState.selectedChatId || '');
+            customerServiceState.selectedPeerUserId = String(selectedConversation.peer_user_id || customerServiceState.selectedPeerUserId || '');
+            customerServiceState.selectedPeerUserName = String(selectedConversation.peer_user_name || customerServiceState.selectedPeerUserName || '');
         }
 
         if (!keepSelection) {
@@ -17753,9 +17769,12 @@ function renderCustomerServiceConversationList() {
     }
 
     const html = allVisibleConversations.map(({ accountId, conv, isStarred }) => {
+        const selectedPeerUserId = String(customerServiceState.selectedPeerUserId || '').trim();
+        const currentPeerUserId = String(conv.peer_user_id || '').trim();
         const isActive =
             String(accountId) === String(customerServiceState.selectedCookieId) &&
-            String(conv.chat_id) === String(customerServiceState.selectedChatId);
+            ((selectedPeerUserId && currentPeerUserId && currentPeerUserId === selectedPeerUserId) ||
+                String(conv.chat_id) === String(customerServiceState.selectedChatId));
         const encodedCookieId = encodeURIComponent(accountId);
         const encodedChatId = encodeURIComponent(conv.chat_id || '');
         const encodedPeerId = encodeURIComponent(conv.peer_user_id || '');
@@ -17856,14 +17875,15 @@ async function loadCustomerServiceMessages(options = {}) {
     const { silent = false } = options;
     const cookieId = customerServiceState.selectedCookieId;
     const chatId = customerServiceState.selectedChatId;
-    if (!cookieId || !chatId) {
+    const peerUserId = customerServiceState.selectedPeerUserId;
+    if (!cookieId || (!chatId && !peerUserId)) {
         renderCustomerServiceMessages([]);
         return;
     }
 
     try {
         const response = await fetch(
-            `${apiBase}/api/customer-service/messages?cookie_id=${encodeURIComponent(cookieId)}&chat_id=${encodeURIComponent(chatId)}&limit=200`,
+            `${apiBase}/api/customer-service/messages?cookie_id=${encodeURIComponent(cookieId)}&chat_id=${encodeURIComponent(chatId || '')}&peer_user_id=${encodeURIComponent(peerUserId || '')}&limit=200`,
             { headers: { 'Authorization': `Bearer ${authToken}` } }
         );
         if (!response.ok) throw new Error(`HTTP ${response.status}`);

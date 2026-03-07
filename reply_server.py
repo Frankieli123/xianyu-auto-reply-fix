@@ -1829,6 +1829,7 @@ def get_customer_service_conversations(current_user: Dict[str, Any] = Depends(ge
     user_cookies = db_manager.get_all_cookies(user_id)
     conversations = db_manager.get_customer_service_conversations(user_id)
     stats = db_manager.get_customer_service_runtime_stats(user_id)
+    stats['total_conversations'] = len(conversations)
 
     account_map = {}
     for cookie_id in user_cookies.keys():
@@ -1872,14 +1873,16 @@ def get_customer_service_conversations(current_user: Dict[str, Any] = Depends(ge
 def get_customer_service_messages(
     cookie_id: str,
     chat_id: str,
+    peer_user_id: str = '',
     limit: int = 200,
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     normalized_cookie_id = str(cookie_id).strip()
     normalized_chat_id = normalize_im_id(chat_id)
+    normalized_peer_user_id = normalize_im_id(peer_user_id)
 
-    if not normalized_cookie_id or not normalized_chat_id:
-        raise HTTPException(status_code=400, detail="cookie_id 和 chat_id 不能为空")
+    if not normalized_cookie_id or (not normalized_chat_id and not normalized_peer_user_id):
+        raise HTTPException(status_code=400, detail="cookie_id 不能为空，chat_id 和 peer_user_id 至少提供一个")
 
     cookie_detail = db_manager.get_cookie_details(normalized_cookie_id)
     if not cookie_detail or cookie_detail.get('user_id') != current_user['user_id']:
@@ -1889,7 +1892,8 @@ def get_customer_service_messages(
         user_id=current_user['user_id'],
         cookie_id=normalized_cookie_id,
         chat_id=normalized_chat_id,
-        limit=limit
+        limit=limit,
+        peer_user_id=normalized_peer_user_id
     )
 
     return {
