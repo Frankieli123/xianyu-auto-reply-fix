@@ -2228,6 +2228,69 @@ Cookie数量: {cookie_count}
                 )
                 return ''
 
+    def get_latest_customer_service_chat_id(
+        self,
+        cookie_id: str,
+        order_id: str = '',
+        peer_user_id: str = '',
+        user_id: int = None
+    ) -> str:
+        """回查最近可用的客服会话ID，优先返回 PNM 会话。"""
+        safe_cookie_id = str(cookie_id or '').strip()
+        safe_order_id = str(order_id or '').strip()
+        safe_peer_user_id = str(peer_user_id or '').split('@')[0].strip()
+        if not safe_cookie_id:
+            return ''
+
+        def _query(cursor, extra_where: str, extra_params: tuple) -> str:
+            where_clauses = [
+                "cookie_id = ?",
+                "chat_id IS NOT NULL",
+                "TRIM(chat_id) <> ''"
+            ]
+            params: List[Any] = [safe_cookie_id]
+
+            if user_id is not None:
+                where_clauses.insert(0, "user_id = ?")
+                params.insert(0, user_id)
+            if extra_where:
+                where_clauses.append(extra_where)
+                params.extend(extra_params)
+
+            sql = f'''
+            SELECT chat_id
+            FROM customer_service_messages
+            WHERE {' AND '.join(where_clauses)}
+            ORDER BY CASE WHEN chat_id LIKE '%.PNM' THEN 0 ELSE 1 END,
+                     message_time DESC,
+                     id DESC
+            LIMIT 1
+            '''
+            self._execute_sql(cursor, sql, tuple(params))
+            row = cursor.fetchone()
+            if not row:
+                return ''
+            return self._normalize_chat_id(row[0])
+
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                if safe_order_id:
+                    chat_id = _query(cursor, "order_id = ?", (safe_order_id,))
+                    if chat_id:
+                        return chat_id
+                if safe_peer_user_id:
+                    chat_id = _query(cursor, "peer_user_id = ?", (safe_peer_user_id,))
+                    if chat_id:
+                        return chat_id
+                return ''
+            except Exception as e:
+                logger.error(
+                    f"回查客服台会话ID失败: cookie_id={safe_cookie_id}, order_id={safe_order_id}, "
+                    f"peer_user_id={safe_peer_user_id}, user_id={user_id}, error={e}"
+                )
+                return ''
+
     def get_customer_service_order_info(
         self,
         user_id: int,

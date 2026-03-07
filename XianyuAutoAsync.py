@@ -7332,6 +7332,25 @@ Cookie数量: {cookie_count}
 
         return "", ""
 
+    def _extract_chat_id_from_message_body(self, message_body) -> str:
+        if isinstance(message_body, dict):
+            primary_value = str(message_body.get("3") or '').strip()
+            secondary_value = str(message_body.get("2") or '').strip()
+
+            for candidate in (primary_value, secondary_value):
+                if candidate and candidate.endswith('.PNM'):
+                    return self._normalize_chat_id(candidate)
+
+            if primary_value:
+                return self._normalize_chat_id(primary_value)
+            if secondary_value:
+                return self._normalize_chat_id(secondary_value)
+
+        if isinstance(message_body, str):
+            return self._normalize_chat_id(message_body)
+
+        return ''
+
     def _record_customer_service_message(
         self,
         chat_id: str,
@@ -9788,9 +9807,17 @@ Cookie数量: {cookie_count}
                             recent_order = db_manager.get_recent_order_by_sid(
                                 sid=simple_sid,
                                 cookie_id=self.cookie_id,
-                                status='pending_ship',  # 只查找已付款待发货状态的订单
+                                status='pending_ship',  # 优先查找已付款待发货状态的订单
                                 minutes=10  # 最近10分钟内的订单
                             )
+
+                            if not recent_order:
+                                logger.warning(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] 未命中待发货订单，尝试放宽状态条件再次查单')
+                                recent_order = db_manager.get_recent_order_by_sid(
+                                    sid=simple_sid,
+                                    cookie_id=self.cookie_id,
+                                    minutes=10
+                                )
                             
                             if recent_order:
                                 order_id = recent_order.get('order_id')
@@ -9862,8 +9889,7 @@ Cookie数量: {cookie_count}
                 send_user_id = message_10.get("senderUserId", "unknown")
                 send_message = message_10.get("reminderContent", "")
 
-                chat_id_raw = message_1.get("2", "")
-                chat_id = chat_id_raw.split('@')[0] if '@' in str(chat_id_raw) else str(chat_id_raw)
+                chat_id = self._extract_chat_id_from_message_body(message_1)
 
                 message_direction = int(message_1.get("7", 0) or 0)
                 content_type = 0

@@ -979,10 +979,23 @@ class OrderStatusHandler:
                             logger.info(f"✅ 通过消息哈希匹配到待处理的系统消息: {pending_msg['send_message']}")
                             break
                 
-                # 如果没有匹配到，使用FIFO原则
+                # 如果没有匹配到，仅在单条且短时间内积压时允许FIFO兜底
                 if not pending_msg and self._pending_system_messages[cookie_id]:
-                    pending_msg = self._pending_system_messages[cookie_id].pop(0)
-                    logger.info(f"✅ 使用FIFO原则处理待处理的系统消息: {pending_msg['send_message']}")
+                    pending_count = len(self._pending_system_messages[cookie_id])
+                    fifo_candidate = self._pending_system_messages[cookie_id][0]
+                    candidate_age = max(0.0, time.time() - float(fifo_candidate.get('timestamp') or time.time()))
+
+                    if pending_count == 1 and candidate_age <= 120:
+                        pending_msg = self._pending_system_messages[cookie_id].pop(0)
+                        logger.info(f"✅ 使用短时FIFO原则处理待处理的系统消息: {pending_msg['send_message']}")
+                    elif pending_count > 1:
+                        logger.warning(
+                            f"⚠️ 账号 {cookie_id} 存在 {pending_count} 条待处理系统消息，跳过FIFO自动绑定，等待更精确匹配"
+                        )
+                    else:
+                        logger.warning(
+                            f"⚠️ 待处理系统消息已滞留 {candidate_age:.1f} 秒，跳过FIFO自动绑定: {fifo_candidate.get('send_message', '')}"
+                        )
                 
                 if pending_msg:
                     logger.info(f"🔄 开始处理待处理的系统消息: {pending_msg['send_message']}")

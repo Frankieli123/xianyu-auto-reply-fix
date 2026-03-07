@@ -153,6 +153,25 @@ def _recover_order_buyer_id(order_id: str, cookie_id: str, sid: str, user_id: in
     return recovered
 
 
+def _resolve_order_send_chat_id(order: Dict[str, Any], user_id: int) -> str:
+    cookie_id = str(order.get('cookie_id') or '').strip()
+    order_id = str(order.get('order_id') or '').strip()
+    sid = str(order.get('sid') or '').strip()
+    buyer_id = _normalize_buyer_id(order.get('buyer_id'), sid=sid)
+
+    if cookie_id:
+        recent_chat_id = db_manager.get_latest_customer_service_chat_id(
+            cookie_id=cookie_id,
+            order_id=order_id,
+            peer_user_id=buyer_id,
+            user_id=user_id
+        )
+        if recent_chat_id:
+            return recent_chat_id
+
+    return normalize_im_id(sid)
+
+
 async def _run_on_cookie_manager_loop(coro: Awaitable[Any], timeout: Optional[float] = None) -> Any:
     """确保协程在 CookieManager 所属事件循环执行，避免跨 loop 使用实例资源。"""
     manager = getattr(cookie_manager, 'manager', None)
@@ -8709,11 +8728,8 @@ async def manual_deliver_order(order_id: str, current_user: Dict[str, Any] = Dep
                     # 使用现有的WebSocket连接发送消息（与自动发货逻辑一致）
                     ws = getattr(xianyu_instance, 'ws', None)
                     if ws:
-                        # 获取订单的sid（会话ID）
-                        sid = order.get('sid', '')
-                        if sid:
-                            # 提取cid部分（去掉@goofish后缀）
-                            cid = sid.replace('@goofish', '')
+                        cid = _resolve_order_send_chat_id(order, user_id)
+                        if cid:
                             log_with_user('info', f"手动发货: 使用现有WebSocket连接发送, cid={cid}, buyer_id={buyer_id}", current_user)
                             await _run_on_cookie_manager_loop(
                                 xianyu_instance.send_msg(ws, cid, buyer_id, delivery_content),
