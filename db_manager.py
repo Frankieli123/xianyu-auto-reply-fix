@@ -2066,6 +2066,7 @@ Cookie数量: {cookie_count}
                 )
                 rows = cursor.fetchall()
                 conversations = []
+                peer_name_cache = {}
                 for row in rows:
                     message_type = row[5] or 'text'
                     raw_content = row[6] or ''
@@ -2079,6 +2080,29 @@ Cookie数量: {cookie_count}
 
                     peer_user_name = (row[3] or '').strip()
                     peer_user_id = (row[2] or '').strip()
+                    if not peer_user_name and peer_user_id:
+                        cache_key = (str(row[0] or '').strip(), peer_user_id)
+                        cached_name = peer_name_cache.get(cache_key)
+                        if cached_name is None:
+                            self._execute_sql(
+                                cursor,
+                                '''
+                                SELECT peer_user_name
+                                FROM customer_service_messages
+                                WHERE user_id = ?
+                                  AND cookie_id = ?
+                                  AND peer_user_id = ?
+                                  AND peer_user_name IS NOT NULL
+                                  AND TRIM(peer_user_name) <> ''
+                                ORDER BY message_time DESC, id DESC
+                                LIMIT 1
+                                ''',
+                                (user_id, cache_key[0], cache_key[1])
+                            )
+                            name_row = cursor.fetchone()
+                            cached_name = str(name_row[0] or '').strip() if name_row else ''
+                            peer_name_cache[cache_key] = cached_name
+                        peer_user_name = cached_name
                     if not peer_user_name:
                         peer_user_name = peer_user_id or '未知用户'
 
