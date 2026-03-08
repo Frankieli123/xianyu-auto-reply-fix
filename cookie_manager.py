@@ -264,6 +264,12 @@ class CookieManager:
                         logger.error(f"等待任务清理时出错: {cookie_id}, {e}")
                     logger.info(f"【{cookie_id}】旧任务已停止")
 
+                try:
+                    from order_status_handler import order_status_handler
+                    order_status_handler.clear_pending_for_cookie(cookie_id)
+                except Exception as clear_error:
+                    logger.warning(f"【{cookie_id}】清理待处理状态残留失败: {clear_error}")
+
                 # 更新Cookie值
                 self.cookies[cookie_id] = new_value
                 

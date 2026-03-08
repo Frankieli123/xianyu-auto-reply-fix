@@ -19,6 +19,7 @@ ORDER_STATUS_HANDLER_CONFIG = {
     'strict_validation': True,                     # 是否启用严格的状态转换验证
     'log_level': 'info',                          # 日志级别 (debug/info/warning/error)
     'max_pending_age_hours': 24,                  # 待处理更新的最大保留时间（小时）
+    'pending_match_window_seconds': 600,          # 待处理消息允许按业务键补绑的时间窗口（秒）
     'enable_status_logging': True,                # 是否启用详细的状态变更日志
 }
 
@@ -77,6 +78,90 @@ class OrderStatusHandler:
         # 设置日志级别
         log_level = self.config.get('log_level', 'info')
         logger.info(f"订单状态处理器初始化完成，配置: {self.config}")
+
+    def _build_message_fingerprint(self, message: Any) -> str:
+        """生成稳定的消息指纹，避免因 dict 顺序导致匹配失败。"""
+        if message is None:
+            return ''
+        try:
+            return json.dumps(message, ensure_ascii=False, sort_keys=True, separators=(',', ':'), default=str)
+        except Exception:
+            return str(message)
+
+    def _normalize_chat_id(self, chat_id: Any) -> str:
+        if chat_id is None:
+            return ''
+        value = str(chat_id).strip()
+        if not value:
+            return ''
+        return value.split('@')[0]
+
+    def _normalize_user_id(self, user_id: Any) -> str:
+        if user_id is None:
+            return ''
+        value = str(user_id).strip()
+        if not value or value.lower() in ('unknown', 'unknown_user'):
+            return ''
+        return value
+
+    def _extract_message_match_context(self, message: Any) -> Dict[str, str]:
+        """从消息中提取用于补绑待处理消息的稳定业务键。"""
+        context = {
+            'sid': '',
+            'sid_normalized': '',
+            'user_id': ''
+        }
+        if not isinstance(message, dict):
+            return context
+
+        try:
+            message_1 = message.get('1')
+            if isinstance(message_1, str):
+                context['sid'] = message_1.strip()
+            elif isinstance(message_1, dict):
+                context['sid'] = str(message_1.get('2', '') or '').strip()
+                message_10 = message_1.get('10', {})
+                if isinstance(message_10, dict):
+                    context['user_id'] = self._normalize_user_id(
+                        message_10.get('senderUserId') or message_10.get('senderId')
+                    )
+                    if not context['sid']:
+                        reminder_url = str(message_10.get('reminderUrl', '') or '')
+                        sid_match = re.search(r'[?&]sid=([^&]+)', reminder_url)
+                        if sid_match:
+                            context['sid'] = sid_match.group(1).strip()
+
+            if not context['user_id']:
+                message_3 = message.get('3', {})
+                if isinstance(message_3, dict):
+                    context['user_id'] = self._normalize_user_id(
+                        message_3.get('userId') or message_3.get('senderUserId')
+                    )
+
+            context['sid_normalized'] = self._normalize_chat_id(context['sid'])
+        except Exception as context_error:
+            logger.debug(f"提取消息匹配上下文失败: {context_error}")
+
+        return context
+
+    def _match_pending_message(self, pending_msg: Dict[str, Any], current_context: Dict[str, str], now: float) -> bool:
+        """按业务键匹配待处理消息，避免仅靠FIFO导致串单。"""
+        pending_timestamp = pending_msg.get('timestamp', 0) or 0
+        max_age_seconds = self.config.get('pending_match_window_seconds', 600)
+        if pending_timestamp and now - pending_timestamp > max_age_seconds:
+            return False
+
+        current_sid = current_context.get('sid_normalized', '')
+        pending_sid = self._normalize_chat_id(pending_msg.get('sid_normalized') or pending_msg.get('sid'))
+        if not current_sid or not pending_sid or current_sid != pending_sid:
+            return False
+
+        current_user_id = current_context.get('user_id', '')
+        pending_user_id = self._normalize_user_id(pending_msg.get('user_id'))
+        if current_user_id and pending_user_id and current_user_id != pending_user_id:
+            return False
+
+        return True
     
     def extract_order_id(self, message: dict) -> Optional[str]:
         """从消息中提取订单ID"""
@@ -629,6 +714,50 @@ class OrderStatusHandler:
             total_cleared = len(expired_orders) + len(expired_cookies_system) + len(expired_cookies_red)
             if total_cleared > 0:
                 logger.info(f"内存清理完成，共清理了 {total_cleared} 个过期项目")
+
+    def clear_pending_for_cookie(self, cookie_id: str):
+        """清理指定账号的待处理状态消息，避免旧会话残留影响新任务。"""
+        if not cookie_id:
+            return
+
+        with self._lock:
+            temp_order_ids = set()
+
+            system_messages = self._pending_system_messages.pop(cookie_id, [])
+            for message in system_messages:
+                temp_order_id = message.get('temp_order_id')
+                if temp_order_id:
+                    temp_order_ids.add(temp_order_id)
+
+            red_messages = self._pending_red_reminder_messages.pop(cookie_id, [])
+            for message in red_messages:
+                temp_order_id = message.get('temp_order_id')
+                if temp_order_id:
+                    temp_order_ids.add(temp_order_id)
+
+            removed_pending_updates = 0
+            for order_id in list(self.pending_updates.keys()):
+                updates = self.pending_updates.get(order_id, [])
+                if order_id in temp_order_ids:
+                    del self.pending_updates[order_id]
+                    removed_pending_updates += 1
+                    continue
+
+                filtered_updates = [update for update in updates if update.get('cookie_id') != cookie_id]
+                if len(filtered_updates) != len(updates):
+                    removed_pending_updates += len(updates) - len(filtered_updates)
+                    if filtered_updates:
+                        self.pending_updates[order_id] = filtered_updates
+                    else:
+                        del self.pending_updates[order_id]
+
+            removed_system = len(system_messages)
+            removed_red = len(red_messages)
+            if removed_system or removed_red or removed_pending_updates:
+                logger.info(
+                    f"已清理账号 {cookie_id} 的待处理状态残留: "
+                    f"system={removed_system}, red={removed_red}, pending={removed_pending_updates}"
+                )
     
     def handle_system_message(self, message: dict, send_message: str, cookie_id: str, msg_time: str) -> bool:
         """处理系统消息并更新订单状态
@@ -677,6 +806,7 @@ class OrderStatusHandler:
                     return False
 
                 logger.info(f'[{msg_time}] 【{cookie_id}】{send_message}，暂时无法提取订单ID，添加到待处理队列')
+                match_context = self._extract_message_match_context(message)
                 
                 # 创建一个临时的订单ID占位符，用于标识这个待处理的状态更新
                 temp_order_id = f"temp_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
@@ -700,7 +830,10 @@ class OrderStatusHandler:
                     'msg_time': msg_time,
                     'new_status': new_status,
                     'temp_order_id': temp_order_id,
-                    'message_hash': hash(str(sorted(message.items()))) if isinstance(message, dict) else hash(str(message)),  # 添加消息哈希用于匹配
+                    'message_fingerprint': self._build_message_fingerprint(message),
+                    'sid': match_context.get('sid', ''),
+                    'sid_normalized': match_context.get('sid_normalized', ''),
+                    'user_id': match_context.get('user_id', ''),
                     'timestamp': time.time()  # 添加时间戳用于清理
                 })
                 
@@ -781,6 +914,7 @@ class OrderStatusHandler:
                     return False
 
                 logger.info(f'[{msg_time}] 【{cookie_id}】交易关闭，暂时无法提取订单ID，添加到待处理队列')
+                match_context = self._extract_message_match_context(message)
                 
                 # 创建一个临时的订单ID占位符，用于标识这个待处理的状态更新
                 temp_order_id = f"temp_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
@@ -805,7 +939,9 @@ class OrderStatusHandler:
                     'msg_time': msg_time,
                     'new_status': 'cancelled',
                     'temp_order_id': temp_order_id,
-                    'message_hash': hash(str(sorted(message.items()))) if isinstance(message, dict) else hash(str(message)),  # 添加消息哈希用于匹配
+                    'message_fingerprint': self._build_message_fingerprint(message),
+                    'sid': match_context.get('sid', ''),
+                    'sid_normalized': match_context.get('sid_normalized', ''),
                     'timestamp': time.time()  # 添加时间戳用于清理
                 })
                 
@@ -953,6 +1089,8 @@ class OrderStatusHandler:
             message: 原始消息（可选，用于匹配）
         """
         logger.info(f"🔄 订单状态处理器.on_order_id_extracted开始: order_id={order_id}, cookie_id={cookie_id}")
+
+        self.clear_old_pending_updates()
         
         with self._lock:
             # 检查是否启用待处理队列
@@ -966,23 +1104,36 @@ class OrderStatusHandler:
             if cookie_id in self._pending_system_messages and self._pending_system_messages[cookie_id]:
                 logger.info(f"📝 账号 {cookie_id} 有 {len(self._pending_system_messages[cookie_id])} 个待处理的系统消息")
                 pending_msg = None
+                current_context = self._extract_message_match_context(message)
+                now = time.time()
                 
                 # 如果提供了消息，尝试匹配
                 if message:
-                    logger.info(f"🔍 尝试通过消息哈希匹配待处理的系统消息")
-                    message_hash = hash(str(sorted(message.items()))) if isinstance(message, dict) else hash(str(message))
+                    logger.info(f"🔍 尝试通过消息指纹/业务键匹配待处理的系统消息")
+                    message_fingerprint = self._build_message_fingerprint(message)
                     # 从后往前遍历，避免pop时索引变化问题
                     for i in range(len(self._pending_system_messages[cookie_id]) - 1, -1, -1):
                         msg = self._pending_system_messages[cookie_id][i]
-                        if msg.get('message_hash') == message_hash:
+                        if msg.get('message_fingerprint') == message_fingerprint:
                             pending_msg = self._pending_system_messages[cookie_id].pop(i)
-                            logger.info(f"✅ 通过消息哈希匹配到待处理的系统消息: {pending_msg['send_message']}")
+                            logger.info(f"✅ 通过消息指纹匹配到待处理的系统消息: {pending_msg['send_message']}")
                             break
-                
-                # 如果没有匹配到，使用FIFO原则
-                if not pending_msg and self._pending_system_messages[cookie_id]:
-                    pending_msg = self._pending_system_messages[cookie_id].pop(0)
-                    logger.info(f"✅ 使用FIFO原则处理待处理的系统消息: {pending_msg['send_message']}")
+
+                    if not pending_msg:
+                        for i in range(len(self._pending_system_messages[cookie_id]) - 1, -1, -1):
+                            msg = self._pending_system_messages[cookie_id][i]
+                            if self._match_pending_message(msg, current_context, now):
+                                pending_msg = self._pending_system_messages[cookie_id].pop(i)
+                                logger.info(
+                                    f"✅ 通过业务键匹配到待处理的系统消息: {pending_msg['send_message']} "
+                                    f"(sid={msg.get('sid_normalized') or msg.get('sid')}, user_id={msg.get('user_id', '')})"
+                                )
+                                break
+
+                if not pending_msg:
+                    logger.warning(
+                        f"⚠️ 订单 {order_id} 未匹配到对应的待处理系统消息，已跳过FIFO兜底以避免串单"
+                    )
                 
                 if pending_msg:
                     logger.info(f"🔄 开始处理待处理的系统消息: {pending_msg['send_message']}")
@@ -1019,22 +1170,35 @@ class OrderStatusHandler:
             # 处理待处理的红色提醒消息队列
             if cookie_id in self._pending_red_reminder_messages and self._pending_red_reminder_messages[cookie_id]:
                 pending_msg = None
+                current_context = self._extract_message_match_context(message)
+                now = time.time()
                 
                 # 如果提供了消息，尝试匹配
                 if message:
-                    message_hash = hash(str(sorted(message.items()))) if isinstance(message, dict) else hash(str(message))
+                    message_fingerprint = self._build_message_fingerprint(message)
                     # 从后往前遍历，避免pop时索引变化问题
                     for i in range(len(self._pending_red_reminder_messages[cookie_id]) - 1, -1, -1):
                         msg = self._pending_red_reminder_messages[cookie_id][i]
-                        if msg.get('message_hash') == message_hash:
+                        if msg.get('message_fingerprint') == message_fingerprint:
                             pending_msg = self._pending_red_reminder_messages[cookie_id].pop(i)
-                            logger.info(f"通过消息哈希匹配到待处理的红色提醒消息: {pending_msg['red_reminder']}")
+                            logger.info(f"通过消息指纹匹配到待处理的红色提醒消息: {pending_msg['red_reminder']}")
                             break
-                
-                # 如果没有匹配到，使用FIFO原则
-                if not pending_msg and self._pending_red_reminder_messages[cookie_id]:
-                    pending_msg = self._pending_red_reminder_messages[cookie_id].pop(0)
-                    logger.info(f"使用FIFO原则处理待处理的红色提醒消息: {pending_msg['red_reminder']}")
+
+                    if not pending_msg:
+                        for i in range(len(self._pending_red_reminder_messages[cookie_id]) - 1, -1, -1):
+                            msg = self._pending_red_reminder_messages[cookie_id][i]
+                            if self._match_pending_message(msg, current_context, now):
+                                pending_msg = self._pending_red_reminder_messages[cookie_id].pop(i)
+                                logger.info(
+                                    f"通过业务键匹配到待处理的红色提醒消息: {pending_msg['red_reminder']} "
+                                    f"(sid={msg.get('sid_normalized') or msg.get('sid')}, user_id={msg.get('user_id', '')})"
+                                )
+                                break
+
+                if not pending_msg:
+                    logger.warning(
+                        f"⚠️ 订单 {order_id} 未匹配到对应的待处理红色提醒消息，已跳过FIFO兜底以避免串单"
+                    )
                 
                 if pending_msg:
                     logger.info(f"检测到订单 {order_id} ID已提取，开始处理待处理的红色提醒消息: {pending_msg['red_reminder']}")

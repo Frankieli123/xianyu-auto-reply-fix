@@ -514,7 +514,7 @@ class OrderDetailFetcher:
             logger.error(f"解析SKU内容异常: {e}")
             return {}
 
-    def _normalize_amount_text(self, amount_text: str) -> Optional[str]:
+    def _normalize_amount_text(self, amount_text: str, require_currency: bool = False) -> Optional[str]:
         """标准化金额文本，返回纯数字字符串（如 29.90）"""
         try:
             if amount_text is None:
@@ -528,10 +528,17 @@ class OrderDetailFetcher:
             if money_match:
                 return money_match.group(1)
 
+            if require_currency:
+                return None
+
             # 兜底提取纯数字
             number_match = re.search(r'([0-9]+(?:\.[0-9]{1,2})?)', text)
             if number_match:
-                return number_match.group(1)
+                normalized = number_match.group(1)
+                integer_part = normalized.split('.', 1)[0]
+                if '.' not in normalized and len(integer_part) >= 8:
+                    return None
+                return normalized
 
             return None
         except Exception:
@@ -599,7 +606,7 @@ class OrderDetailFetcher:
 
         # 兜底：从全文提取货币数字
         if 'amount' not in result:
-            normalized_amount = self._normalize_amount_text(text)
+            normalized_amount = self._normalize_amount_text(text, require_currency=True)
             if normalized_amount:
                 result['amount'] = normalized_amount
 
