@@ -16758,6 +16758,8 @@ const CUSTOMER_SERVICE_STARRED_STORAGE_KEY = 'customer_service_starred_conversat
 const CUSTOMER_SERVICE_TEMPLATE_STORAGE_KEY = 'customer_service_templates_v1';
 const CUSTOMER_SERVICE_IMAGE_LIBRARY_STORAGE_KEY = 'customer_service_image_library_v1';
 const CUSTOMER_SERVICE_LEGACY_QUICK_REPLY_STORAGE_KEY = 'customer_service_quick_replies_v1';
+const CUSTOMER_SERVICE_TEMPLATE_SETTING_KEY = 'customer_service_templates';
+const CUSTOMER_SERVICE_IMAGE_LIBRARY_SETTING_KEY = 'customer_service_image_library';
 const CUSTOMER_SERVICE_INPUT_MAX_HEIGHT = 180;
 const CUSTOMER_SERVICE_MAX_TEMPLATE_COUNT = 50;
 const CUSTOMER_SERVICE_MAX_IMAGE_LIBRARY_COUNT = 200;
@@ -16956,6 +16958,34 @@ function saveCustomerServiceStarredConversations() {
     }
 }
 
+function parseCustomerServiceSettingValue(rawValue) {
+    if (typeof rawValue !== 'string' || !rawValue.trim()) return null;
+    try {
+        return JSON.parse(rawValue);
+    } catch (error) {
+        console.warn('解析客服台同步配置失败:', error);
+        return null;
+    }
+}
+
+async function persistCustomerServiceSetting(key, value, description) {
+    if (!authToken) return;
+    const response = await fetch(`${apiBase}/user-settings/${encodeURIComponent(key)}`, {
+        method: 'PUT',
+        headers: {
+            'Authorization': `Bearer ${authToken}`,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            value: JSON.stringify(value),
+            description
+        })
+    });
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+    }
+}
+
 function normalizeCustomerServiceTemplates(value) {
     if (!Array.isArray(value)) return [];
     const normalized = [];
@@ -16978,6 +17008,13 @@ function saveCustomerServiceTemplates() {
     } catch (error) {
         console.warn('保存客服台模板失败:', error);
     }
+    persistCustomerServiceSetting(
+        CUSTOMER_SERVICE_TEMPLATE_SETTING_KEY,
+        customerServiceState.templates,
+        '客服台对话模板'
+    ).catch(error => {
+        console.warn('同步客服台模板失败:', error);
+    });
 }
 
 function normalizeCustomerServiceImageLibrary(value) {
@@ -17008,6 +17045,13 @@ function saveCustomerServiceImageLibrary() {
     } catch (error) {
         console.warn('保存客服台图片库失败:', error);
     }
+    persistCustomerServiceSetting(
+        CUSTOMER_SERVICE_IMAGE_LIBRARY_SETTING_KEY,
+        customerServiceState.imageLibrary,
+        '客服台图片库'
+    ).catch(error => {
+        console.warn('同步客服台图片库失败:', error);
+    });
 }
 
 function loadCustomerServiceLocalSettings() {
@@ -17056,6 +17100,69 @@ function loadCustomerServiceLocalSettings() {
     } catch (error) {
         console.warn('读取客服台图片库失败:', error);
         customerServiceState.imageLibrary = [];
+    }
+}
+
+async function syncCustomerServiceSharedSettings() {
+    if (!authToken) return;
+
+    try {
+        const response = await fetch(`${apiBase}/user-settings`, {
+            headers: { 'Authorization': `Bearer ${authToken}` }
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        const settings = await response.json();
+
+        const remoteTemplateSetting = settings?.[CUSTOMER_SERVICE_TEMPLATE_SETTING_KEY];
+        const remoteImageLibrarySetting = settings?.[CUSTOMER_SERVICE_IMAGE_LIBRARY_SETTING_KEY];
+
+        if (remoteTemplateSetting) {
+            const parsedTemplates = parseCustomerServiceSettingValue(remoteTemplateSetting.value);
+            if (parsedTemplates !== null) {
+                customerServiceState.templates = normalizeCustomerServiceTemplates(parsedTemplates);
+                try {
+                    localStorage.setItem(CUSTOMER_SERVICE_TEMPLATE_STORAGE_KEY, JSON.stringify(customerServiceState.templates));
+                } catch (error) {
+                    console.warn('写入本地客服台模板缓存失败:', error);
+                }
+            }
+        } else if (customerServiceState.templates.length) {
+            persistCustomerServiceSetting(
+                CUSTOMER_SERVICE_TEMPLATE_SETTING_KEY,
+                customerServiceState.templates,
+                '客服台对话模板'
+            ).catch(error => {
+                console.warn('迁移客服台模板到同步配置失败:', error);
+            });
+        }
+
+        if (remoteImageLibrarySetting) {
+            const parsedImageLibrary = parseCustomerServiceSettingValue(remoteImageLibrarySetting.value);
+            if (parsedImageLibrary !== null) {
+                customerServiceState.imageLibrary = normalizeCustomerServiceImageLibrary(parsedImageLibrary);
+                try {
+                    localStorage.setItem(CUSTOMER_SERVICE_IMAGE_LIBRARY_STORAGE_KEY, JSON.stringify(customerServiceState.imageLibrary));
+                } catch (error) {
+                    console.warn('写入本地客服台图片库缓存失败:', error);
+                }
+            }
+        } else if (customerServiceState.imageLibrary.length) {
+            persistCustomerServiceSetting(
+                CUSTOMER_SERVICE_IMAGE_LIBRARY_SETTING_KEY,
+                customerServiceState.imageLibrary,
+                '客服台图片库'
+            ).catch(error => {
+                console.warn('迁移客服台图片库到同步配置失败:', error);
+            });
+        }
+
+        renderCustomerServiceTemplateManagerList();
+        renderCustomerServiceImageLibrary();
+    } catch (error) {
+        console.warn('读取客服台同步配置失败:', error);
     }
 }
 
@@ -17199,15 +17306,6 @@ function renderCustomerServiceTemplateManagerList() {
         if (isEditing) {
             return `
                 <div class="cs-template-manager-item editing">
-                    <button
-                        type="button"
-                        class="cs-template-delete-btn"
-                        title="删除"
-                        onmousedown="event.preventDefault()"
-                        onclick="deleteCustomerServiceTemplate(event, ${index})"
-                    >
-                        <i class="bi bi-x-lg"></i>
-                    </button>
                     <input
                         id="csTemplateInlineInput-${index}"
                         type="text"
@@ -17216,25 +17314,47 @@ function renderCustomerServiceTemplateManagerList() {
                         onkeydown="handleCustomerServiceTemplateInlineKeydown(event, ${index})"
                         onblur="saveCustomerServiceTemplateInlineEdit(${index})"
                     >
+                    <div class="cs-template-manager-actions">
+                        <button
+                            type="button"
+                            class="cs-template-action-btn cs-template-delete-btn"
+                            title="删除"
+                            onmousedown="event.preventDefault()"
+                            onclick="deleteCustomerServiceTemplate(event, ${index})"
+                        >
+                            <i class="bi bi-x-lg"></i>
+                        </button>
+                    </div>
                 </div>
             `;
         }
         return `
             <div
                 class="cs-template-manager-item"
-                title="${escapeCustomerServiceHtml(content)}"
-                ondblclick="startEditCustomerServiceTemplate(${index})"
+                title="单击发送模板"
+                onclick="sendCustomerServiceTemplateFromModal(event, ${index})"
             >
-                <button
-                    type="button"
-                    class="cs-template-delete-btn"
-                    title="删除"
-                    onmousedown="event.preventDefault()"
-                    onclick="deleteCustomerServiceTemplate(event, ${index})"
-                >
-                    <i class="bi bi-x-lg"></i>
-                </button>
                 <div class="cs-template-manager-text">${escapeCustomerServiceHtml(content)}</div>
+                <div class="cs-template-manager-actions">
+                    <button
+                        type="button"
+                        class="cs-template-action-btn"
+                        title="编辑"
+                        onmousedown="event.preventDefault()"
+                        onclick="startEditCustomerServiceTemplate(event, ${index})"
+                    >
+                        <i class="bi bi-pencil"></i>
+                    </button>
+                    <button
+                        type="button"
+                        class="cs-template-action-btn cs-template-delete-btn"
+                        title="删除"
+                        onmousedown="event.preventDefault()"
+                        onclick="deleteCustomerServiceTemplate(event, ${index})"
+                    >
+                        <i class="bi bi-x-lg"></i>
+                    </button>
+                </div>
             </div>
         `;
     }).join('');
@@ -17261,7 +17381,7 @@ function openCustomerServiceTemplateManager() {
                 </div>
                 <div class="modal-body">
                     <div class="d-flex justify-content-between align-items-center mb-2">
-                        <div class="text-muted small">双击编辑，右上角删除</div>
+                        <div class="text-muted small">单击发送，右侧编辑/删除，内容自动同步</div>
                         <button type="button" class="btn btn-sm btn-primary" onclick="addCustomerServiceTemplate()">
                             <i class="bi bi-plus-lg me-1"></i>新增模板
                         </button>
@@ -17299,7 +17419,23 @@ function focusCustomerServiceTemplateInlineInput(index) {
     }, 0);
 }
 
-function startEditCustomerServiceTemplate(index) {
+function closeCustomerServiceModal(modalId) {
+    const modalEl = document.getElementById(modalId);
+    const modal = modalEl ? bootstrap.Modal.getInstance(modalEl) : null;
+    if (modal) {
+        modal.hide();
+    }
+}
+
+function startEditCustomerServiceTemplate(eventOrIndex, maybeIndex) {
+    let index = eventOrIndex;
+    if (typeof eventOrIndex !== 'number') {
+        if (eventOrIndex) {
+            eventOrIndex.preventDefault();
+            eventOrIndex.stopPropagation();
+        }
+        index = maybeIndex;
+    }
     const current = customerServiceState.templates[index];
     if (current === undefined) return;
     customerServiceState.templateEditingIndex = index;
@@ -17468,6 +17604,23 @@ function handleCustomerServiceComposerInput() {
     refreshCustomerServiceSlashMenu();
 }
 
+async function sendCustomerServiceTemplateFromModal(event, index) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+    const content = String(customerServiceState.templates[index] || '').trim();
+    if (!content) return;
+    const success = await sendCustomerServiceMessage({
+        directText: content,
+        preserveText: true,
+        silentSuccess: true
+    });
+    if (success) {
+        closeCustomerServiceModal('csTemplateManagerModal');
+    }
+}
+
 function applyCustomerServiceTemplateFromModal(index) {
     const content = customerServiceState.templates[index];
     const input = document.getElementById('csMessageInput');
@@ -17622,6 +17775,7 @@ async function loadCustomerService() {
     renderCustomerServiceQuickReplies();
     hideCustomerServiceSlashMenu();
     applyCustomerServiceMobileLayout();
+    await syncCustomerServiceSharedSettings();
     await refreshCustomerServiceData({ silent: true, preserveSelection: true, includeDetails: true, renderView: true });
     startCustomerServicePolling();
 }
@@ -18162,9 +18316,10 @@ function clearCustomerServiceImage() {
 }
 
 async function sendCustomerServiceMessage(options = {}) {
-    if (customerServiceState.isSending) return;
+    if (customerServiceState.isSending) return false;
 
     const { imageOnly = false, preserveText = false, silentSuccess = true, directImageUrl = '' } = options;
+    const hasDirectText = Object.prototype.hasOwnProperty.call(options, 'directText');
     const cookieId = customerServiceState.selectedCookieId;
     let currentChatId = customerServiceState.selectedChatId;
     const toUserId = customerServiceState.selectedPeerUserId;
@@ -18173,18 +18328,20 @@ async function sendCustomerServiceMessage(options = {}) {
     const conversationItemId = String(selectedConversation?.item_id || '').trim();
     const conversationOrderId = String(selectedConversation?.order_id || '').trim();
     const textInput = document.getElementById('csMessageInput');
-    const text = imageOnly ? '' : (textInput?.value || '').trim();
+    const text = imageOnly
+        ? ''
+        : (hasDirectText ? String(options.directText || '').trim() : (textInput?.value || '').trim());
     const imageFile = customerServiceState.selectedImageFile;
     const presetImageUrl = String(directImageUrl || '').trim();
 
     if (!cookieId || !currentChatId || !toUserId) {
         showToast('请先选择有效会话', 'warning');
-        return;
+        return false;
     }
 
     if (!text && !imageFile && !presetImageUrl) {
         showToast('请输入消息或选择图片', 'warning');
-        return;
+        return false;
     }
 
     const applySendResult = (result) => {
@@ -18258,7 +18415,7 @@ async function sendCustomerServiceMessage(options = {}) {
             applySendResult(textSendData);
         }
 
-        if (textInput && !preserveText) {
+        if (textInput && !preserveText && !hasDirectText) {
             textInput.value = '';
             resizeCustomerServiceInput(true);
         }
@@ -18269,9 +18426,11 @@ async function sendCustomerServiceMessage(options = {}) {
             showToast('消息发送成功', 'success');
         }
         await refreshCustomerServiceData({ silent: true, preserveSelection: true });
+        return true;
     } catch (error) {
         console.error('发送客服消息失败:', error);
         showToast(error.message || '发送失败', 'danger');
+        return false;
     } finally {
         customerServiceState.isSending = false;
         if (sendBtn) {

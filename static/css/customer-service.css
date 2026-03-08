@@ -351,6 +351,9 @@
 
 .cs-template-manager-item {
   position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
   width: 100%;
   border: 1px solid #dbe5f1;
   background: #ffffff;
@@ -362,7 +365,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   border-radius: 10px;
-  padding: 0.58rem 2rem 0.58rem 0.65rem;
+  padding: 0.58rem 0.6rem 0.58rem 0.65rem;
   transition: border-color 0.2s ease, background 0.2s ease;
   cursor: pointer;
 }
@@ -382,12 +385,41 @@
 }
 
 .cs-template-manager-text {
+  flex: 1;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+.cs-template-manager-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-shrink: 0;
+}
+
+.cs-template-action-btn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: #94a3b8;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cs-template-action-btn:hover {
+  background: #e2e8f0;
+  color: #334155;
+}
+
 .cs-template-inline-input {
+  flex: 1;
+  min-width: 0;
   width: 100%;
   border: none;
   outline: none;
@@ -399,19 +431,7 @@
 }
 
 .cs-template-delete-btn {
-  position: absolute;
-  right: 0.36rem;
-  top: 0.34rem;
-  width: 22px;
-  height: 22px;
-  border: none;
-  border-radius: 999px;
-  background: transparent;
-  color: #94a3b8;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  position: static;
 }
 
 .cs-template-delete-btn:hover {
