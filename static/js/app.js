@@ -18166,15 +18166,18 @@ async function sendCustomerServiceMessage(options = {}) {
 
     const { imageOnly = false, preserveText = false, silentSuccess = true, directImageUrl = '' } = options;
     const cookieId = customerServiceState.selectedCookieId;
-    const chatId = customerServiceState.selectedChatId;
+    let currentChatId = customerServiceState.selectedChatId;
     const toUserId = customerServiceState.selectedPeerUserId;
     const toUserName = customerServiceState.selectedPeerUserName || '';
+    const selectedConversation = getCustomerServiceSelectedConversation();
+    const conversationItemId = String(selectedConversation?.item_id || '').trim();
+    const conversationOrderId = String(selectedConversation?.order_id || '').trim();
     const textInput = document.getElementById('csMessageInput');
     const text = imageOnly ? '' : (textInput?.value || '').trim();
     const imageFile = customerServiceState.selectedImageFile;
     const presetImageUrl = String(directImageUrl || '').trim();
 
-    if (!cookieId || !chatId || !toUserId) {
+    if (!cookieId || !currentChatId || !toUserId) {
         showToast('请先选择有效会话', 'warning');
         return;
     }
@@ -18183,6 +18186,15 @@ async function sendCustomerServiceMessage(options = {}) {
         showToast('请输入消息或选择图片', 'warning');
         return;
     }
+
+    const applySendResult = (result) => {
+        const effectiveChatId = String(result?.chat_id || '').trim();
+        if (!effectiveChatId) return;
+        currentChatId = effectiveChatId;
+        if (String(customerServiceState.selectedChatId || '') !== effectiveChatId) {
+            customerServiceState.selectedChatId = effectiveChatId;
+        }
+    };
 
     const sendBtn = document.getElementById('csSendBtn');
     customerServiceState.isSending = true;
@@ -18205,17 +18217,20 @@ async function sendCustomerServiceMessage(options = {}) {
                 },
                 body: JSON.stringify({
                     cookie_id: cookieId,
-                    chat_id: chatId,
+                    chat_id: currentChatId,
                     to_user_id: toUserId,
                     to_user_name: toUserName,
+                    item_id: conversationItemId,
+                    order_id: conversationOrderId,
                     message_type: 'image',
                     image_url: imageUrl
                 })
             });
+            const imageSendData = await imageSendResp.json().catch(() => ({}));
             if (!imageSendResp.ok) {
-                const err = await imageSendResp.json().catch(() => ({}));
-                throw new Error(err.detail || '图片发送失败');
+                throw new Error(imageSendData.detail || '图片发送失败');
             }
+            applySendResult(imageSendData);
         }
 
         if (text) {
@@ -18227,17 +18242,20 @@ async function sendCustomerServiceMessage(options = {}) {
                 },
                 body: JSON.stringify({
                     cookie_id: cookieId,
-                    chat_id: chatId,
+                    chat_id: currentChatId,
                     to_user_id: toUserId,
                     to_user_name: toUserName,
+                    item_id: conversationItemId,
+                    order_id: conversationOrderId,
                     message_type: 'text',
                     message: text
                 })
             });
+            const textSendData = await textSendResp.json().catch(() => ({}));
             if (!textSendResp.ok) {
-                const err = await textSendResp.json().catch(() => ({}));
-                throw new Error(err.detail || '文本发送失败');
+                throw new Error(textSendData.detail || '文本发送失败');
             }
+            applySendResult(textSendData);
         }
 
         if (textInput && !preserveText) {

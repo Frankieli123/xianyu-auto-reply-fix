@@ -2228,6 +2228,86 @@ Cookie数量: {cookie_count}
                 )
                 return ''
 
+
+    def get_latest_customer_service_chat_id(
+        self,
+        cookie_id: str,
+        peer_user_id: str,
+        user_id: int = None,
+        item_id: str = '',
+        order_id: str = ''
+    ) -> str:
+        """按订单/商品/买家回查最近有效聊天ID；仅在上下文唯一时才自动纠偏。"""
+        safe_cookie_id = str(cookie_id or '').strip()
+        safe_peer_user_id = self._normalize_chat_id(peer_user_id)
+        safe_item_id = str(item_id or '').strip()
+        safe_order_id = str(order_id or '').strip()
+        if not safe_cookie_id or not safe_peer_user_id:
+            return ''
+
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                base_where = [
+                    "cookie_id = ?",
+                    "peer_user_id = ?",
+                    "chat_id IS NOT NULL",
+                    "TRIM(chat_id) <> ''"
+                ]
+                base_params: List[Any] = [safe_cookie_id, safe_peer_user_id]
+
+                if user_id is not None:
+                    base_where.insert(0, "user_id = ?")
+                    base_params.insert(0, user_id)
+
+                def fetch_unique_chat_id(extra_where: List[str] = None, extra_params: List[Any] = None, inbound_only: bool = False) -> str:
+                    where_clauses = list(base_where)
+                    params = list(base_params)
+                    if extra_where:
+                        where_clauses.extend(extra_where)
+                    if extra_params:
+                        params.extend(extra_params)
+                    sql = f'''
+                    SELECT chat_id, MAX(message_time) AS last_time, MAX(id) AS last_id
+                    FROM customer_service_messages
+                    WHERE {' AND '.join(where_clauses)}
+                    '''
+                    if inbound_only:
+                        sql += " AND direction = 'in'"
+                    sql += " GROUP BY chat_id ORDER BY last_time DESC, last_id DESC LIMIT 2"
+                    self._execute_sql(cursor, sql, tuple(params))
+                    rows = cursor.fetchall()
+                    if len(rows) != 1 or not rows[0][0]:
+                        return ''
+                    return self._normalize_chat_id(rows[0][0])
+
+                if safe_order_id:
+                    chat_id = fetch_unique_chat_id(["order_id = ?"], [safe_order_id], inbound_only=True)
+                    if chat_id:
+                        return chat_id
+                    chat_id = fetch_unique_chat_id(["order_id = ?"], [safe_order_id], inbound_only=False)
+                    if chat_id:
+                        return chat_id
+
+                if safe_item_id:
+                    chat_id = fetch_unique_chat_id(["item_id = ?"], [safe_item_id], inbound_only=True)
+                    if chat_id:
+                        return chat_id
+                    chat_id = fetch_unique_chat_id(["item_id = ?"], [safe_item_id], inbound_only=False)
+                    if chat_id:
+                        return chat_id
+
+                chat_id = fetch_unique_chat_id(inbound_only=True)
+                if chat_id:
+                    return chat_id
+                return fetch_unique_chat_id(inbound_only=False)
+            except Exception as e:
+                logger.error(
+                    f"回查客服台聊天ID失败: cookie_id={safe_cookie_id}, peer_user_id={safe_peer_user_id}, "
+                    f"item_id={safe_item_id}, order_id={safe_order_id}, user_id={user_id}, error={e}"
+                )
+                return ''
+
     def get_customer_service_order_info(
         self,
         user_id: int,

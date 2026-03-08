@@ -1654,6 +1654,8 @@ class CustomerServiceSendRequest(BaseModel):
     chat_id: str
     to_user_id: str
     to_user_name: Optional[str] = ''
+    item_id: Optional[str] = ''
+    order_id: Optional[str] = ''
     message_type: str = 'text'  # text | image
     message: Optional[str] = ''
     image_url: Optional[str] = ''
@@ -1990,9 +1992,12 @@ async def send_customer_service_message(
     normalized_chat_id = normalize_im_id(request.chat_id)
     normalized_to_user_id = normalize_im_id(request.to_user_id)
     normalized_to_user_name = str(request.to_user_name or '').strip()
+    normalized_item_id = str(request.item_id or '').strip()
+    normalized_order_id = str(request.order_id or '').strip()
     normalized_message_type = str(request.message_type or 'text').strip().lower()
     normalized_message = str(request.message or '')
     normalized_image_url = str(request.image_url or '').strip()
+    effective_chat_id = normalized_chat_id
     audit_logged = False
     message_preview = _build_customer_service_send_message_preview(
         normalized_message_type,
@@ -2006,7 +2011,7 @@ async def send_customer_service_message(
             db_manager.add_customer_service_send_audit_log(
                 user_id=current_user['user_id'],
                 cookie_id=normalized_cookie_id,
-                chat_id=normalized_chat_id,
+                chat_id=effective_chat_id,
                 to_user_id=normalized_to_user_id,
                 to_user_name=normalized_to_user_name,
                 message_type=normalized_message_type,
@@ -2033,6 +2038,21 @@ async def send_customer_service_message(
     if not cookie_detail or cookie_detail.get('user_id') != current_user['user_id']:
         reject("账号不存在或无权限", status_code=404)
 
+    recovered_chat_id = db_manager.get_latest_customer_service_chat_id(
+        cookie_id=normalized_cookie_id,
+        peer_user_id=normalized_to_user_id,
+        user_id=current_user['user_id'],
+        item_id=normalized_item_id,
+        order_id=normalized_order_id
+    )
+    if recovered_chat_id and recovered_chat_id != normalized_chat_id:
+        logger.info(
+            f"客服台发送前自动纠正chat_id: cookie_id={normalized_cookie_id}, "
+            f"peer_user_id={normalized_to_user_id}, requested_chat_id={normalized_chat_id}, "
+            f"effective_chat_id={recovered_chat_id}"
+        )
+        effective_chat_id = recovered_chat_id
+
     from XianyuAutoAsync import XianyuLive, ConnectionState
     live_instance = None
     if cookie_manager.manager:
@@ -2055,7 +2075,7 @@ async def send_customer_service_message(
                 reject("image_url 不能为空")
             await live_instance.send_image_msg(
                 live_instance.ws,
-                normalized_chat_id,
+                effective_chat_id,
                 normalized_to_user_id,
                 normalized_image_url,
                 peer_name=normalized_to_user_name
@@ -2066,7 +2086,7 @@ async def send_customer_service_message(
                 reject("message 不能为空")
             await live_instance.send_msg(
                 live_instance.ws,
-                normalized_chat_id,
+                effective_chat_id,
                 normalized_to_user_id,
                 normalized_text,
                 peer_name=normalized_to_user_name
@@ -2083,7 +2103,10 @@ async def send_customer_service_message(
 
     return {
         'success': True,
-        'message': '消息发送成功'
+        'message': '消息发送成功',
+        'chat_id': effective_chat_id,
+        'requested_chat_id': normalized_chat_id,
+        'chat_id_corrected': effective_chat_id != normalized_chat_id
     }
 
 
