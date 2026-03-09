@@ -60,6 +60,8 @@ class DBManager:
         # SQL日志配置 - 默认启用
         self.sql_log_enabled = True  # 默认启用SQL日志
         self.sql_log_level = 'INFO'  # 默认使用INFO级别
+        # 客服台相关查询非常频繁（会话/昵称补全等），默认不记录其 SELECT 语句，避免日志刷屏
+        self.sql_log_skip_customer_service_select = os.getenv('SQL_LOG_SKIP_CS_SELECT', 'true').lower() == 'true'
 
         # 允许通过环境变量覆盖默认设置
         if os.getenv('SQL_LOG_ENABLED'):
@@ -93,6 +95,8 @@ class DBManager:
             # 内部标准状态
             'processing': 'processing',
             'pending_ship': 'pending_ship',
+            # 历史/展示态别名（旧数据兼容）
+            'pending_delivery': 'pending_ship',
             'shipped': 'shipped',
             'completed': 'completed',
             'refunding': 'refunding',
@@ -1796,6 +1800,13 @@ Cookie数量: {cookie_count}
         # 格式化SQL（移除多余空白）
         formatted_sql = ' '.join(sql.split())
         sql_lower = formatted_sql.lower()
+
+        if (
+            self.sql_log_skip_customer_service_select
+            and sql_lower.startswith('select')
+            and 'customer_service_messages' in sql_lower
+        ):
+            return
         sensitive_keywords = ('password', 'proxy_pass', 'smtp_password', 'admin_password_hash')
         contains_sensitive = any(keyword in sql_lower for keyword in sensitive_keywords)
 
@@ -6026,6 +6037,60 @@ Cookie数量: {cookie_count}
                 self.conn.rollback()
                 return None
 
+    def get_batch_data_remaining_count(self, card_id: int) -> int:
+        """获取批量数据卡券余量（不消费）"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor, "SELECT data_content FROM cards WHERE id = ? AND type = 'data'", (card_id,))
+                result = cursor.fetchone()
+                if not result or not result[0]:
+                    return 0
+
+                lines = [line.strip() for line in str(result[0]).split('\n') if line.strip()]
+                return len(lines)
+            except Exception as e:
+                logger.error(f"获取批量数据余量失败: {e}")
+                return 0
+
+    def consume_batch_data_with_remaining(self, card_id: int):
+        """消费批量数据并返回(内容, 剩余条数)"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+
+                self._execute_sql(cursor, "SELECT data_content FROM cards WHERE id = ? AND type = 'data'", (card_id,))
+                result = cursor.fetchone()
+                if not result or not result[0]:
+                    logger.warning(f"卡券 {card_id} 没有批量数据")
+                    return None, 0
+
+                lines = [line.strip() for line in str(result[0]).split('\n') if line.strip()]
+                if not lines:
+                    logger.warning(f"卡券 {card_id} 批量数据为空")
+                    return None, 0
+
+                first_line = lines[0]
+                remaining_lines = lines[1:]
+
+                cursor.execute(
+                    '''
+                    UPDATE cards
+                    SET data_content = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    ''',
+                    ('\n'.join(remaining_lines), card_id),
+                )
+                self.conn.commit()
+
+                remaining_count = len(remaining_lines)
+                logger.info(f"消费批量数据成功: 卡券ID={card_id}, 剩余={remaining_count}条")
+                return first_line, remaining_count
+            except Exception as e:
+                logger.error(f"消费批量数据失败: {e}")
+                self.conn.rollback()
+                return None, 0
+
     # ==================== 商品信息管理 ====================
 
     def save_item_basic_info(self, cookie_id: str, item_id: str, item_title: str = None,
@@ -7355,8 +7420,13 @@ Cookie数量: {cookie_count}
                     params.append(cookie_id)
                 
                 if status:
-                    conditions.append("order_status = ?")
-                    params.append(status)
+                    normalized_status = self._normalize_order_status(status)
+                    if normalized_status == 'pending_ship':
+                        conditions.append("(order_status = ? OR order_status = ?)")
+                        params.extend(['pending_ship', 'pending_delivery'])
+                    else:
+                        conditions.append("order_status = ?")
+                        params.append(normalized_status)
                 
                 # 添加时间限制
                 conditions.append("datetime(COALESCE(updated_at, created_at)) >= datetime('now', ?)")

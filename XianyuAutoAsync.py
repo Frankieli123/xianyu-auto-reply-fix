@@ -1954,6 +1954,8 @@ class XianyuLive:
                 if isinstance(delivery_result, dict):
                     delivery_content = delivery_result.get('content')
                     delivery_error = delivery_result.get('error')
+                    delivery_card_type = delivery_result.get('card_type')
+                    delivery_card_remaining = delivery_result.get('card_remaining')
                     delivery_rule_meta = {
                         'rule_id': delivery_result.get('rule_id'),
                         'rule_keyword': delivery_result.get('rule_keyword'),
@@ -1963,6 +1965,8 @@ class XianyuLive:
                 else:
                     delivery_content = delivery_result
                     delivery_error = None
+                    delivery_card_type = None
+                    delivery_card_remaining = None
                     delivery_rule_meta = {}
                 
                 if delivery_content:
@@ -2024,11 +2028,17 @@ class XianyuLive:
                         raise
                     
                     # 发送成功通知
+                    success_notice = "发货成功"
+                    if delivery_card_type == 'data' and delivery_card_remaining is not None:
+                        suffix = f"卡券余量: {delivery_card_remaining}"
+                        if str(delivery_card_remaining).isdigit() and int(delivery_card_remaining) <= 0:
+                            suffix += "，已用尽"
+                        success_notice = f"{success_notice}（{suffix}）"
                     await self.send_delivery_failure_notification(
                         send_user_name="买家",
                         send_user_id=user_id,
                         item_id=item_id,
-                        error_message="发货成功",
+                        error_message=success_notice,
                         chat_id=chat_id
                     )
                     
@@ -2048,7 +2058,7 @@ class XianyuLive:
                         send_user_name="买家",
                         send_user_id=user_id,
                         item_id=item_id,
-                        error_message="未找到匹配的发货规则或获取发货内容失败",
+                        error_message=delivery_error or "未找到匹配的发货规则或获取发货内容失败",
                         chat_id=chat_id
                     )
                     
@@ -2359,6 +2369,7 @@ class XianyuLive:
                     # 多次调用自动发货方法，每次获取不同的内容
                     delivery_payloads = []
                     last_delivery_error = None
+                    last_card_remaining = None
 
                     for i in range(quantity_to_send):
                         try:
@@ -2376,6 +2387,8 @@ class XianyuLive:
                             if isinstance(delivery_result, dict):
                                 delivery_content = delivery_result.get('content')
                                 delivery_error = delivery_result.get('error')
+                                delivery_card_type = delivery_result.get('card_type')
+                                delivery_card_remaining = delivery_result.get('card_remaining')
                                 rule_meta = {
                                     'rule_id': delivery_result.get('rule_id'),
                                     'rule_keyword': delivery_result.get('rule_keyword'),
@@ -2385,12 +2398,16 @@ class XianyuLive:
                             else:
                                 delivery_content = delivery_result
                                 delivery_error = None
+                                delivery_card_type = None
+                                delivery_card_remaining = None
                                 rule_meta = {}
                             if delivery_content:
                                 delivery_payloads.append({
                                     'content': delivery_content,
                                     'rule_meta': rule_meta
                                 })
+                                if delivery_card_type == 'data' and delivery_card_remaining is not None:
+                                    last_card_remaining = delivery_card_remaining
                                 if quantity_to_send > 1:
                                     logger.info(f"第 {i+1}/{quantity_to_send} 个卡券内容获取成功")
                             else:
@@ -2517,9 +2534,15 @@ class XianyuLive:
 
                         # 发送成功通知
                         if len(delivery_payloads) > 1:
-                            await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, f"多数量发货成功，共发送 {len(delivery_payloads)} 个卡券", chat_id)
+                            success_notice = f"多数量发货成功，共发送 {len(delivery_payloads)} 个卡券"
                         else:
-                            await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, "发货成功", chat_id)
+                            success_notice = "发货成功"
+                        if last_card_remaining is not None:
+                            suffix = f"卡券余量: {last_card_remaining}"
+                            if str(last_card_remaining).isdigit() and int(last_card_remaining) <= 0:
+                                suffix += "，已用尽"
+                            success_notice = f"{success_notice}（{suffix}）"
+                        await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, success_notice, chat_id)
                     else:
                         logger.warning(f'[{msg_time}] 【自动发货】未找到匹配的发货规则或获取发货内容失败')
                         self._record_delivery_log(
@@ -2532,7 +2555,13 @@ class XianyuLive:
                             channel='auto'
                         )
                         # 发送自动发货失败通知
-                        await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, "未找到匹配的发货规则或获取发货内容失败", chat_id)
+                        await self.send_delivery_failure_notification(
+                            send_user_name,
+                            send_user_id,
+                            item_id,
+                            last_delivery_error or "未找到匹配的发货规则或获取发货内容失败",
+                            chat_id,
+                        )
 
                 except Exception as e:
                     self._record_delivery_log(
@@ -6170,7 +6199,14 @@ Cookie数量: {cookie_count}
                              trade_side: str = None):
         """自动发货功能 - 获取卡券规则，执行延时，确认发货，发送内容"""
         try:
-            def build_result(success: bool, content: str = None, error: str = None, matched_rule: dict = None, match_mode_value: str = None):
+            def build_result(
+                success: bool,
+                content: str = None,
+                error: str = None,
+                matched_rule: dict = None,
+                match_mode_value: str = None,
+                card_remaining: int = None,
+            ):
                 if include_meta:
                     return {
                         "success": bool(success),
@@ -6179,7 +6215,8 @@ Cookie数量: {cookie_count}
                         "rule_id": matched_rule.get('id') if matched_rule else None,
                         "rule_keyword": matched_rule.get('keyword') if matched_rule else None,
                         "card_type": matched_rule.get('card_type') if matched_rule else None,
-                        "match_mode": match_mode_value
+                        "match_mode": match_mode_value,
+                        "card_remaining": card_remaining
                     }
                 return content if success else None
 
@@ -6407,6 +6444,20 @@ Cookie数量: {cookie_count}
                 await asyncio.sleep(delay_seconds)
                 logger.info(f"延时完成")
 
+            if order_id and rule.get('card_type') == 'data':
+                remaining = db_manager.get_batch_data_remaining_count(rule.get('card_id'))
+                if remaining <= 0:
+                    card_name = rule.get('card_name') or ''
+                    card_id = rule.get('card_id')
+                    logger.warning(f"卡券库存为空，阻止确认发货: 卡券ID={card_id}, 名称={card_name}, 订单={order_id}")
+                    return build_result(
+                        False,
+                        error=f"卡券库存为空，无法自动发货: {card_name}(ID:{card_id})",
+                        matched_rule=rule,
+                        match_mode_value=match_mode,
+                        card_remaining=0,
+                    )
+
             # 如果有订单ID，执行确认发货
             if order_id:
                 # 检查是否启用自动确认发货
@@ -6506,7 +6557,7 @@ Cookie数量: {cookie_count}
 
                 elif rule['card_type'] == 'data':
                     # 批量数据类型：获取并消费第一条数据
-                    delivery_content = db_manager.consume_batch_data(rule['card_id'])
+                    delivery_content, card_remaining = db_manager.consume_batch_data_with_remaining(rule['card_id'])
 
                 elif rule['card_type'] == 'image':
                     # 图片类型：返回图片发送标记，包含卡券ID
@@ -6525,10 +6576,26 @@ Cookie数量: {cookie_count}
                     # 增加发货次数统计
                     db_manager.increment_delivery_times(rule['id'])
                     logger.info(f"自动发货成功: 规则ID={rule['id']}, 内容长度={len(final_content)}")
-                    return build_result(True, content=final_content, matched_rule=rule, match_mode_value=match_mode)
+                    return build_result(
+                        True,
+                        content=final_content,
+                        matched_rule=rule,
+                        match_mode_value=match_mode,
+                        card_remaining=(card_remaining if rule.get('card_type') == 'data' else None),
+                    )
                 else:
                     logger.warning(f"获取发货内容失败: 规则ID={rule['id']}")
-                    return build_result(False, error=f"获取发货内容失败: 规则ID={rule['id']}", matched_rule=rule, match_mode_value=match_mode)
+                    failure_message = f"获取发货内容失败: 规则ID={rule['id']}"
+                    if rule.get('card_type') == 'data':
+                        card_name = rule.get('card_name') or ''
+                        card_id = rule.get('card_id')
+                        failure_message = f"卡券库存为空或批量数据无效: {card_name}(ID:{card_id})"
+                    return build_result(
+                        False,
+                        error=failure_message,
+                        matched_rule=rule,
+                        match_mode_value=match_mode,
+                    )
             else:
                 # 没有订单ID，记录日志但不处理发货内容
                 logger.info(f"⚠️ 未检测到订单ID，跳过发货内容处理。规则: {rule['keyword']} -> {rule['card_name']} ({rule['card_type']})")
@@ -9615,49 +9682,70 @@ Cookie数量: {cookie_count}
                         temp_buyer_nick = None  # 买家昵称
                         temp_trade_side = self._extract_trade_side(message, message_data)
 
-                        # 提取用户ID和买家昵称
+                        # 提取用户ID、买家昵称和会话元信息
+                        message_meta = None
                         try:
-                            message_1 = message.get("1")
-                            if isinstance(message_1, str) and '@' in message_1:
-                                # 简化结构中的 message['1'] 是 sid，不是 buyer_id
-                                temp_user_id = None
-                            elif isinstance(message_1, dict):
-                                # 从字典中提取用户ID和买家昵称
-                                if "10" in message_1 and isinstance(message_1["10"], dict):
-                                    message_10 = message_1["10"]
-                                    temp_user_id = message_10.get("senderUserId", "unknown_user")
-                                    # 提取买家昵称：优先使用senderNick，如果为空则尝试使用reminderTitle
-                                    temp_buyer_nick = self._normalize_buyer_nick(message_10.get("senderNick"))
-                                    if not temp_buyer_nick:
-                                        reminder_title = message_10.get("reminderTitle", "")
-                                        temp_buyer_nick = self._normalize_buyer_nick(reminder_title)
-                                        if temp_buyer_nick:
-                                            logger.info(f"【{self.cookie_id}】[{msg_id}] 👤 从reminderTitle提取到买家昵称: {temp_buyer_nick}")
+                            message_1 = message.get("1") if isinstance(message, dict) else None
+                            if isinstance(message_1, dict) and isinstance(message_1.get("10"), dict):
+                                message_meta = message_1.get("10")
+                            elif isinstance(message, dict) and isinstance(message.get("4"), dict):
+                                message_meta = message.get("4")
+
+                            if isinstance(message_meta, dict):
+                                temp_user_id = self._normalize_chat_id(message_meta.get("senderUserId", "unknown_user")) or "unknown_user"
+                                temp_buyer_nick = self._normalize_buyer_nick(message_meta.get("senderNick"))
+                                if not temp_buyer_nick:
+                                    reminder_title = message_meta.get("reminderTitle", "")
+                                    temp_buyer_nick = self._normalize_buyer_nick(reminder_title)
                                     if temp_buyer_nick:
-                                        logger.info(f"【{self.cookie_id}】[{msg_id}] 👤 提取到买家昵称: {temp_buyer_nick}")
-                                else:
-                                    temp_user_id = "unknown_user"
+                                        logger.info(f"【{self.cookie_id}】[{msg_id}] 👤 从reminderTitle提取到买家昵称: {temp_buyer_nick}")
+                                if not temp_user_id or temp_user_id in ("unknown_user", "unknown"):
+                                    reminder_url = message_meta.get("reminderUrl", "") or ""
+                                    peer_match = re.search(r'[?&]peerUserId=([^&]+)', reminder_url)
+                                    if peer_match:
+                                        temp_user_id = self._normalize_chat_id(peer_match.group(1)) or "unknown_user"
+                                if not temp_buyer_nick and temp_user_id and temp_user_id not in ("unknown_user", "unknown"):
+                                    try:
+                                        from db_manager import db_manager
+                                        recovered_nick = db_manager.get_latest_customer_service_peer_name(self.cookie_id, temp_user_id)
+                                        recovered_nick = self._normalize_buyer_nick(recovered_nick)
+                                        if recovered_nick:
+                                            temp_buyer_nick = recovered_nick
+                                            logger.info(f"【{self.cookie_id}】[{msg_id}] 👤 从历史客服消息回填买家昵称: {temp_buyer_nick}")
+                                    except Exception:
+                                        pass
+                                if temp_buyer_nick:
+                                    logger.info(f"【{self.cookie_id}】[{msg_id}] 👤 提取到买家昵称: {temp_buyer_nick}")
+                            else:
+                                temp_user_id = "unknown_user"
                         except Exception:
                             temp_user_id = "unknown_user"
 
                         # 提取sid（会话ID）用于简化消息匹配订单
-                        # 完整消息结构: {'1': {'1': {...}, '2': '56226853668@goofish', ...}}
-                        # sid在message['1']['2']中
                         try:
-                            message_1 = message.get("1")
-                            if isinstance(message_1, str):
-                                temp_sid = message_1
-                            elif isinstance(message_1, dict):
+                            message_1 = message.get("1") if isinstance(message, dict) else None
+                            if isinstance(message_1, dict):
                                 temp_sid = message_1.get("2", "")
-                                if temp_sid:
-                                    logger.info(f"【{self.cookie_id}】[{msg_id}] 📌 提取到sid: {temp_sid}")
+                            elif isinstance(message_1, str):
+                                temp_sid = message_1
+                            elif isinstance(message, dict):
+                                temp_sid = message.get("2", "")
+
+                            reminder_url = message_meta.get("reminderUrl", "") if isinstance(message_meta, dict) else ""
+                            sid_match = re.search(r'[?&]sid=([^&]+)', reminder_url)
+                            reminder_sid = sid_match.group(1) if sid_match else ""
+                            if reminder_sid and (not temp_sid or str(temp_sid).strip().endswith('.PNM')):
+                                temp_sid = reminder_sid
+                            temp_sid = self._normalize_chat_id(temp_sid)
+                            if temp_sid:
+                                logger.info(f"【{self.cookie_id}】[{msg_id}] 📌 提取到sid: {temp_sid}")
                         except Exception as sid_e:
                             logger.warning(f"【{self.cookie_id}】[{msg_id}] 提取sid失败: {self._safe_str(sid_e)}")
 
                         # 提取商品ID
                         try:
-                            if "1" in message and isinstance(message["1"], dict) and "10" in message["1"] and isinstance(message["1"]["10"], dict):
-                                url_info = message["1"]["10"].get("reminderUrl", "")
+                            if isinstance(message_meta, dict):
+                                url_info = message_meta.get("reminderUrl", "")
                                 if isinstance(url_info, str) and "itemId=" in url_info:
                                     temp_item_id = url_info.split("itemId=")[1].split("&")[0]
 
