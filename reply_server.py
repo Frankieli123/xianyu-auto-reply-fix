@@ -8594,21 +8594,28 @@ def get_user_orders(current_user: Dict[str, Any] = Depends(get_current_user)):
         # 获取所有订单数据
         all_orders = []
         excluded_buy_count = 0
-        nick_cache: Dict[str, str] = {}
         for cookie_id in user_cookies.keys():
             orders = db_manager.get_orders_by_cookie(cookie_id, limit=1000)  # 增加限制数量
+            missing_buyer_ids = []
+            for order in orders:
+                if _normalize_order_trade_side(order.get('trade_side')) == 'buy':
+                    continue
+                buyer_nick = str(order.get('buyer_nick') or '').strip()
+                buyer_id = _normalize_buyer_id(order.get('buyer_id'), sid=order.get('sid'))
+                if not buyer_nick and buyer_id:
+                    missing_buyer_ids.append(buyer_id)
+
+            nick_map = db_manager.get_latest_customer_service_peer_names(cookie_id, missing_buyer_ids)
+
             for order in orders:
                 if _normalize_order_trade_side(order.get('trade_side')) == 'buy':
                     excluded_buy_count += 1
                     continue
 
                 buyer_nick = str(order.get('buyer_nick') or '').strip()
-                buyer_id = str(order.get('buyer_id') or '').strip()
+                buyer_id = _normalize_buyer_id(order.get('buyer_id'), sid=order.get('sid'))
                 if not buyer_nick and buyer_id:
-                    cache_key = f"{cookie_id}:{buyer_id}"
-                    if cache_key not in nick_cache:
-                        nick_cache[cache_key] = db_manager.get_latest_customer_service_peer_name(cookie_id, buyer_id)
-                    fallback_nick = nick_cache.get(cache_key, '')
+                    fallback_nick = nick_map.get(buyer_id, '')
                     if fallback_nick:
                         order['buyer_nick'] = fallback_nick
                 order['cookie_id'] = cookie_id

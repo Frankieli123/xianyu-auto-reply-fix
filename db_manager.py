@@ -2066,7 +2066,25 @@ Cookie数量: {cookie_count}
                 )
                 rows = cursor.fetchall()
                 conversations = []
-                peer_name_cache = {}
+                peer_name_cache: Dict[Tuple[str, str], str] = {}
+                missing_peer_ids_by_cookie: Dict[str, List[str]] = {}
+                for row in rows:
+                    cookie_id = str(row[0] or '').strip()
+                    peer_user_name = str(row[3] or '').strip()
+                    peer_user_id = str(row[2] or '').strip()
+                    normalized_peer_user_id = self._normalize_chat_id(peer_user_id)
+                    if cookie_id and not peer_user_name and normalized_peer_user_id:
+                        missing_peer_ids_by_cookie.setdefault(cookie_id, []).append(normalized_peer_user_id)
+
+                for cookie_id, peer_user_ids in missing_peer_ids_by_cookie.items():
+                    nick_map = self.get_latest_customer_service_peer_names(
+                        cookie_id,
+                        peer_user_ids,
+                        user_id=user_id
+                    )
+                    for peer_user_id, peer_user_name in nick_map.items():
+                        peer_name_cache[(cookie_id, peer_user_id)] = peer_user_name
+
                 for row in rows:
                     message_type = row[5] or 'text'
                     raw_content = row[6] or ''
@@ -2078,36 +2096,17 @@ Cookie数量: {cookie_count}
                     if len(preview) > 80:
                         preview = preview[:80] + '...'
 
+                    cookie_id = str(row[0] or '').strip()
                     peer_user_name = (row[3] or '').strip()
                     peer_user_id = (row[2] or '').strip()
+                    normalized_peer_user_id = self._normalize_chat_id(peer_user_id)
                     if not peer_user_name and peer_user_id:
-                        cache_key = (str(row[0] or '').strip(), peer_user_id)
-                        cached_name = peer_name_cache.get(cache_key)
-                        if cached_name is None:
-                            self._execute_sql(
-                                cursor,
-                                '''
-                                SELECT peer_user_name
-                                FROM customer_service_messages
-                                WHERE user_id = ?
-                                  AND cookie_id = ?
-                                  AND peer_user_id = ?
-                                  AND peer_user_name IS NOT NULL
-                                  AND TRIM(peer_user_name) <> ''
-                                ORDER BY message_time DESC, id DESC
-                                LIMIT 1
-                                ''',
-                                (user_id, cache_key[0], cache_key[1])
-                            )
-                            name_row = cursor.fetchone()
-                            cached_name = str(name_row[0] or '').strip() if name_row else ''
-                            peer_name_cache[cache_key] = cached_name
-                        peer_user_name = cached_name
+                        peer_user_name = peer_name_cache.get((cookie_id, normalized_peer_user_id), '')
                     if not peer_user_name:
                         peer_user_name = peer_user_id or '未知用户'
 
                     conversations.append({
-                        'cookie_id': row[0],
+                        'cookie_id': cookie_id,
                         'chat_id': row[1],
                         'peer_user_id': peer_user_id,
                         'peer_user_name': peer_user_name,
@@ -2174,30 +2173,80 @@ Cookie数量: {cookie_count}
         if not cookie_id or not normalized_peer_id:
             return ''
 
+        nick_map = self.get_latest_customer_service_peer_names(cookie_id, [normalized_peer_id])
+        return nick_map.get(normalized_peer_id, '')
+
+    def get_latest_customer_service_peer_names(
+        self,
+        cookie_id: str,
+        peer_user_ids: List[str],
+        user_id: int = None
+    ) -> Dict[str, str]:
+        safe_cookie_id = str(cookie_id or '').strip()
+        if not safe_cookie_id or not peer_user_ids:
+            return {}
+
+        normalized_peer_ids: List[str] = []
+        seen_peer_ids = set()
+        for peer_user_id in peer_user_ids:
+            normalized_peer_id = self._normalize_chat_id(peer_user_id)
+            if not normalized_peer_id or normalized_peer_id in seen_peer_ids:
+                continue
+            seen_peer_ids.add(normalized_peer_id)
+            normalized_peer_ids.append(normalized_peer_id)
+
+        if not normalized_peer_ids:
+            return {}
+
         with self.lock:
             try:
                 cursor = self.conn.cursor()
-                self._execute_sql(
-                    cursor,
+                peer_names: Dict[str, str] = {}
+                batch_size = 200
+
+                for start in range(0, len(normalized_peer_ids), batch_size):
+                    batch_peer_ids = normalized_peer_ids[start:start + batch_size]
+                    placeholders = ', '.join('?' for _ in batch_peer_ids)
+                    user_filter_sql = 'AND m.user_id = ?' if user_id is not None else ''
+                    inner_user_filter_sql = 'AND inner_m.user_id = m.user_id' if user_id is not None else ''
+                    sql = f'''
+                    SELECT m.peer_user_id, m.peer_user_name
+                    FROM customer_service_messages m
+                    WHERE m.cookie_id = ?
+                      {user_filter_sql}
+                      AND m.peer_user_id IN ({placeholders})
+                      AND m.peer_user_name IS NOT NULL
+                      AND TRIM(m.peer_user_name) <> ''
+                      AND m.id = (
+                          SELECT inner_m.id
+                          FROM customer_service_messages inner_m
+                          WHERE inner_m.cookie_id = m.cookie_id
+                            {inner_user_filter_sql}
+                            AND inner_m.peer_user_id = m.peer_user_id
+                            AND inner_m.peer_user_name IS NOT NULL
+                            AND TRIM(inner_m.peer_user_name) <> ''
+                          ORDER BY inner_m.message_time DESC, inner_m.id DESC
+                          LIMIT 1
+                      )
                     '''
-                    SELECT peer_user_name
-                    FROM customer_service_messages
-                    WHERE cookie_id = ?
-                      AND peer_user_id = ?
-                      AND peer_user_name IS NOT NULL
-                      AND TRIM(peer_user_name) <> ''
-                    ORDER BY message_time DESC, id DESC
-                    LIMIT 1
-                    ''',
-                    (cookie_id, normalized_peer_id)
-                )
-                row = cursor.fetchone()
-                if not row:
-                    return ''
-                return str(row[0] or '').strip()
+                    params: List[Any] = [safe_cookie_id]
+                    if user_id is not None:
+                        params.append(user_id)
+                    params.extend(batch_peer_ids)
+                    self._execute_sql(cursor, sql, tuple(params))
+                    for row in cursor.fetchall():
+                        normalized_peer_id = self._normalize_chat_id(row[0])
+                        peer_name = str(row[1] or '').strip()
+                        if normalized_peer_id and peer_name:
+                            peer_names[normalized_peer_id] = peer_name
+
+                return peer_names
             except Exception as e:
-                logger.error(f"获取客服台会话昵称失败: cookie_id={cookie_id}, peer_user_id={normalized_peer_id}, error={e}")
-                return ''
+                logger.error(
+                    f"批量获取客服台会话昵称失败: cookie_id={safe_cookie_id}, "
+                    f"peer_user_count={len(normalized_peer_ids)}, error={e}"
+                )
+                return {}
 
     def get_latest_customer_service_peer_id(
         self,
