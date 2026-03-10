@@ -9879,6 +9879,68 @@ Cookie数量: {cookie_count}
                                 status='pending_ship',  # 只查找已付款待发货状态的订单
                                 minutes=10  # 最近10分钟内的订单
                             )
+
+                            # 二次尝试：首次查不到待发货订单时，先按sid找最近订单强制刷新状态，再回查pending_ship
+                            if not recent_order:
+                                logger.warning(
+                                    f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] '
+                                    f'⚠️ 首次未找到sid {simple_sid} 的待发货订单，开始二次尝试（强制刷新）'
+                                )
+                                fallback_order = db_manager.get_recent_order_by_sid(
+                                    sid=simple_sid,
+                                    cookie_id=self.cookie_id,
+                                    status=None,  # 不限制状态，先找到候选订单
+                                    minutes=30
+                                )
+                                if fallback_order:
+                                    fallback_order_id = fallback_order.get('order_id')
+                                    fallback_item_id = fallback_order.get('item_id')
+                                    fallback_buyer_id = fallback_order.get('buyer_id')
+                                    logger.info(
+                                        f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] '
+                                        f'🔄 二次尝试候选订单: order_id={fallback_order_id}, '
+                                        f'item_id={fallback_item_id}, buyer_id={fallback_buyer_id}'
+                                    )
+                                    try:
+                                        refreshed = await self.fetch_order_detail_info(
+                                            fallback_order_id,
+                                            fallback_item_id,
+                                            fallback_buyer_id,
+                                            sid=session_id_str,
+                                            force_refresh=True
+                                        )
+                                        if refreshed:
+                                            logger.info(
+                                                f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] '
+                                                f'✅ 二次尝试强制刷新成功: order_id={fallback_order_id}'
+                                            )
+                                        else:
+                                            logger.warning(
+                                                f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] '
+                                                f'⚠️ 二次尝试强制刷新未返回有效详情: order_id={fallback_order_id}'
+                                            )
+                                    except Exception as refresh_e:
+                                        logger.warning(
+                                            f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] '
+                                            f'⚠️ 二次尝试强制刷新异常: {self._safe_str(refresh_e)}'
+                                        )
+
+                                    recent_order = db_manager.get_recent_order_by_sid(
+                                        sid=simple_sid,
+                                        cookie_id=self.cookie_id,
+                                        status='pending_ship',
+                                        minutes=10
+                                    )
+                                    if recent_order:
+                                        logger.info(
+                                            f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] '
+                                            f'✅ 二次尝试命中待发货订单: order_id={recent_order.get("order_id")}'
+                                        )
+                                else:
+                                    logger.warning(
+                                        f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] '
+                                        f'⚠️ 二次尝试未找到sid {simple_sid} 的候选订单'
+                                    )
                             
                             if recent_order:
                                 order_id = recent_order.get('order_id')
