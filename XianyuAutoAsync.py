@@ -3867,7 +3867,7 @@ class XianyuLive:
 
     async def _fetch_item_detail_from_mtop(self, item_id: str, retry_count: int = 0) -> str:
         """通过mtop接口获取商品详情描述（优先使用awesome.detail的itemDO.desc）"""
-        if retry_count >= 3:
+        if retry_count >= 6:
             return ""
 
         try:
@@ -3956,6 +3956,13 @@ class XianyuLive:
                 if 'FAIL_SYS_TOKEN_EXOIRED' in error_msg or 'token' in error_msg.lower():
                     logger.warning(f"mtop商品详情token异常，重试: {item_id} - {error_msg}")
                     await asyncio.sleep(0.5)
+                    return await self._fetch_item_detail_from_mtop(item_id, retry_count + 1)
+
+                busy_markers = ('RGV587', '挤爆', '系统繁忙', '稍后重试', 'FLOW_LIMIT', '限流')
+                if any(marker in error_msg for marker in busy_markers):
+                    delay = min(0.5 * (2 ** retry_count), 4.0)
+                    logger.warning(f"mtop商品详情接口繁忙，{delay:.1f}s后重试: {item_id} - {error_msg}")
+                    await asyncio.sleep(delay)
                     return await self._fetch_item_detail_from_mtop(item_id, retry_count + 1)
 
                 logger.warning(f"mtop商品详情获取失败: {item_id} - {ret_values}")
@@ -4247,9 +4254,9 @@ class XianyuLive:
                 # 明显无效/无关的详情内容
                 if any(k in detail_text for k in ('页面加载失败', '商品异常', '网络异常')):
                     return True
-                if re.fullmatch(r'\\d+人想要', detail_text):
+                if re.fullmatch(r'\d+人想要', detail_text):
                     return True
-                if re.fullmatch(r'[¥￥]\\s*\\d+(?:\\.\\d+)?', detail_text):
+                if re.fullmatch(r'[¥￥]\s*\d+(?:\.\d+)?', detail_text):
                     return True
                 if '买家可申请全额退款' in detail_text and len(detail_text) <= 60:
                     return True
@@ -4320,17 +4327,17 @@ class XianyuLive:
                 logger.info(f"更新商品标题和价格: {update_count}/{len(batch_update_data)} 个")
                 saved_count += update_count
 
-            # 异步获取缺失的商品详情（仅新商品）
+            # 异步获取缺失/无效的商品详情（包含新商品及需要修复的旧数据）
             if items_need_detail:
                 from config import config
                 auto_fetch_config = config.get('ITEM_DETAIL', {}).get('auto_fetch', {})
 
                 if auto_fetch_config.get('enabled', True):
-                    logger.info(f"发现 {len(items_need_detail)} 个新商品缺少详情，开始获取...")
+                    logger.info(f"发现 {len(items_need_detail)} 个商品需要刷新详情，开始获取...")
                     detail_success_count = await self._fetch_missing_item_details(items_need_detail)
                     logger.info(f"成功获取 {detail_success_count}/{len(items_need_detail)} 个商品的详情")
                 else:
-                    logger.info(f"发现 {len(items_need_detail)} 个新商品缺少详情，但自动获取功能已禁用")
+                    logger.info(f"发现 {len(items_need_detail)} 个商品需要刷新详情，但自动获取功能已禁用")
 
             return saved_count
 
