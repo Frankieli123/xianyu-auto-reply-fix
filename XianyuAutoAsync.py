@@ -3807,7 +3807,7 @@ class XianyuLive:
             return False
 
     async def fetch_item_detail_from_api(self, item_id: str) -> str:
-        """获取商品详情（使用浏览器获取，支持24小时缓存）
+        """获取商品详情（优先mtop接口，失败再用浏览器兜底，支持24小时缓存）
 
         Args:
             item_id: 商品ID
@@ -3842,7 +3842,14 @@ class XianyuLive:
                         del self._item_detail_cache[item_id]
                         logger.warning(f"缓存已过期，删除: {item_id}")
 
-            # 2. 尝试使用浏览器获取商品详情
+            # 2. 优先使用mtop接口获取商品详情（更稳定且更快）
+            detail_from_mtop = await self._fetch_item_detail_from_mtop(item_id)
+            if detail_from_mtop:
+                await self._add_to_item_cache(item_id, detail_from_mtop)
+                logger.info(f"成功通过mtop接口获取商品详情: {item_id}, 长度: {len(detail_from_mtop)}")
+                return detail_from_mtop
+
+            # 3. 尝试使用浏览器获取商品详情（兜底）
             detail_from_browser = await self._fetch_item_detail_from_browser(item_id)
             if detail_from_browser:
                 # 保存到缓存（带大小限制）
@@ -3857,6 +3864,107 @@ class XianyuLive:
         except Exception as e:
             logger.error(f"获取商品详情异常: {item_id}, 错误: {self._safe_str(e)}")
             return ""
+
+    async def _fetch_item_detail_from_mtop(self, item_id: str, retry_count: int = 0) -> str:
+        """通过mtop接口获取商品详情描述（优先使用awesome.detail的itemDO.desc）"""
+        if retry_count >= 3:
+            return ""
+
+        try:
+            if not self.session:
+                await self.create_session()
+
+            api = 'mtop.taobao.idle.awesome.detail'
+            api_version = '1.0'
+
+            params = {
+                'jsv': '2.7.2',
+                'appKey': '34839810',
+                't': str(int(time.time()) * 1000),
+                'sign': '',
+                'v': api_version,
+                'type': 'originaljson',
+                'accountSite': 'xianyu',
+                'dataType': 'json',
+                'timeout': '20000',
+                'api': api,
+                'sessionOption': 'AutoLoginOnly',
+                'spm_cnt': 'a21ybx.im.0.0',
+            }
+
+            payload = {'itemId': str(item_id)}
+            data_val = json.dumps(payload, separators=(',', ':'))
+
+            token_value = trans_cookies(self.cookies_str).get('_m_h5_tk') if self.cookies_str else None
+            token = token_value.split('_')[0] if token_value else ''
+            if not token:
+                logger.warning(f"【{self.cookie_id}】cookies中未找到_m_h5_tk，尝试先请求一次获取token: {item_id}")
+
+            params['sign'] = generate_sign(params['t'], token, data_val)
+
+            url = f'https://h5api.m.goofish.com/h5/{api}/{api_version}/'
+            async with self.session.post(
+                url,
+                params=params,
+                data={'data': data_val},
+                headers={'cookie': self.cookies_str}
+            ) as response:
+                res_json = await response.json()
+
+                # 检查并更新Cookie
+                if 'set-cookie' in response.headers:
+                    new_cookies = {}
+                    for cookie in response.headers.getall('set-cookie', []):
+                        if '=' in cookie:
+                            name, value = cookie.split(';')[0].split('=', 1)
+                            new_cookies[name.strip()] = value.strip()
+
+                    if new_cookies:
+                        self.cookies.update(new_cookies)
+                        self.cookies_str = '; '.join([f"{k}={v}" for k, v in self.cookies.items()])
+                        try:
+                            if self.session:
+                                self.session.headers['cookie'] = self.cookies_str
+                        except Exception:
+                            pass
+                        await self.update_config_cookies()
+                        logger.warning(f"【{self.cookie_id}】mtop接口返回set-cookie，已更新到数据库: {item_id}")
+
+                if not isinstance(res_json, dict):
+                    logger.warning(f"mtop商品详情返回格式异常: {item_id}")
+                    await asyncio.sleep(0.5)
+                    return await self._fetch_item_detail_from_mtop(item_id, retry_count + 1)
+
+                ret_values = res_json.get('ret') or []
+                if any('SUCCESS::调用成功' in str(ret) for ret in ret_values):
+                    data_obj = res_json.get('data') or {}
+                    if not isinstance(data_obj, dict):
+                        return ""
+
+                    for key in ('itemDO', 'itemDo'):
+                        item_do = data_obj.get(key)
+                        if isinstance(item_do, dict):
+                            desc = item_do.get('desc')
+                            if isinstance(desc, str) and desc.strip():
+                                return desc.strip()
+
+                    # 兜底：某些返回可能直接在data层
+                    desc = data_obj.get('desc') if isinstance(data_obj.get('desc'), str) else ""
+                    return desc.strip() if desc else ""
+
+                error_msg = str(ret_values[0]) if ret_values else ''
+                if 'FAIL_SYS_TOKEN_EXOIRED' in error_msg or 'token' in error_msg.lower():
+                    logger.warning(f"mtop商品详情token异常，重试: {item_id} - {error_msg}")
+                    await asyncio.sleep(0.5)
+                    return await self._fetch_item_detail_from_mtop(item_id, retry_count + 1)
+
+                logger.warning(f"mtop商品详情获取失败: {item_id} - {ret_values}")
+                return ""
+
+        except Exception as e:
+            logger.warning(f"mtop商品详情请求异常: {item_id}, 错误: {self._safe_str(e)}")
+            await asyncio.sleep(0.5)
+            return await self._fetch_item_detail_from_mtop(item_id, retry_count + 1)
 
     async def _add_to_item_cache(self, item_id: str, detail: str):
         """添加商品详情到缓存，实现LRU策略和大小限制
@@ -4118,6 +4226,36 @@ class XianyuLive:
             batch_update_data = []  # 已有商品，只更新标题和价格
             items_need_detail = []  # 需要获取详情的商品列表
 
+            def _should_refresh_detail(existing_detail: str) -> bool:
+                if not existing_detail:
+                    return True
+
+                detail_text = str(existing_detail).strip()
+                if not detail_text:
+                    return True
+
+                # JSON但没有可用content（通常是保存的元数据），需要刷新真实详情
+                try:
+                    parsed = json.loads(detail_text)
+                    if isinstance(parsed, dict):
+                        content = parsed.get('content') or parsed.get('desc') or parsed.get('description')
+                        return not (isinstance(content, str) and content.strip())
+                    return True
+                except Exception:
+                    pass
+
+                # 明显无效/无关的详情内容
+                if any(k in detail_text for k in ('页面加载失败', '商品异常', '网络异常')):
+                    return True
+                if re.fullmatch(r'\\d+人想要', detail_text):
+                    return True
+                if re.fullmatch(r'[¥￥]\\s*\\d+(?:\\.\\d+)?', detail_text):
+                    return True
+                if '买家可申请全额退款' in detail_text and len(detail_text) <= 60:
+                    return True
+
+                return False
+
             for item in items_list:
                 item_id = item.get('id')
                 if not item_id or item_id.startswith('auto_'):
@@ -4128,22 +4266,6 @@ class XianyuLive:
                     item_status = int(item_status_raw) if item_status_raw is not None else -1
                 except (ValueError, TypeError):
                     item_status = -1
-
-                # 构造商品详情数据
-                item_detail = {
-                    'title': item.get('title', ''),
-                    'price': item.get('price', ''),
-                    'price_text': item.get('price_text', ''),
-                    'category_id': item.get('category_id', ''),
-                    'auction_type': item.get('auction_type', ''),
-                    'item_status': item_status,
-                    'detail_url': item.get('detail_url', ''),
-                    'pic_info': item.get('pic_info', {}),
-                    'detail_params': item.get('detail_params', {}),
-                    'track_params': item.get('track_params', {}),
-                    'item_label_data': item.get('item_label_data', {}),
-                    'card_type': item.get('card_type', 0)
-                }
 
                 # 检查数据库中是否已有该商品
                 existing_item = db_manager.get_item_info(self.cookie_id, item_id)
@@ -4158,6 +4280,11 @@ class XianyuLive:
                         'item_category': str(item.get('category_id', '')),
                         'item_status': item_status
                     })
+                    if _should_refresh_detail(existing_item.get('item_detail')):
+                        items_need_detail.append({
+                            'item_id': item_id,
+                            'item_title': item.get('title', '') or existing_item.get('item_title', '')
+                        })
                     logger.debug(f"商品 {item_id} 已存在，将更新标题和价格")
                 else:
                     # 新商品，保存所有信息
@@ -4168,7 +4295,7 @@ class XianyuLive:
                         'item_description': '',  # 暂时为空
                         'item_category': str(item.get('category_id', '')),
                         'item_price': item.get('price_text', ''),
-                        'item_detail': json.dumps(item_detail, ensure_ascii=False),
+                        'item_detail': '',
                         'item_status': item_status
                     })
                     
